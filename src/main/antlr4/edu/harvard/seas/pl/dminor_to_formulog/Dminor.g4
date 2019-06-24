@@ -17,6 +17,15 @@ typeDef
 typ
 :
 	ID # namedType
+	| '{' typ '*' '}' # collType
+	| '{' expr '}' # singletonType
+	| '{' recordEntries '}' # recordType
+	| typ '|' typ # unionType
+;
+
+recordEntries
+:
+
 ;
 
 funcDef
@@ -47,12 +56,10 @@ expr
 	| ID # varExpr
 	| unop =
 	(
-		NEG
+		SUB
 		| NOT
 	) expr # unopExpr
-	| '(' cond = expr ')' '?' thenBranch = expr ':' elseBranch = expr # condExpr
 	| func = ID '(' args ')' # callExpr
-	| 'let' var = ID '=' val = expr 'in' cont = expr # letExpr
 	| lhs = expr binop =
 	(
 		MUL
@@ -71,6 +78,8 @@ expr
 	| lhs = expr binop = CMPEQ rhs = expr # binopExpr
 	| lhs = expr binop = AND rhs = expr # binopExpr
 	| lhs = expr binop = OR rhs = expr # binopExpr
+	| '(' cond = expr ')' '?' thenBranch = expr ':' elseBranch = expr # condExpr
+	| 'let' var = ID '=' val = expr 'in' cont = expr # letExpr
 ;
 
 args
@@ -81,11 +90,6 @@ args
 			',' expr
 		)*
 	)?
-;
-
-NEG
-:
-	'-'
 ;
 
 NOT
@@ -156,6 +160,11 @@ ID
 COMMENT
 :
 	'//' ~[\n\r]* -> skip
+;
+
+CCOMMENT
+:
+	'/*' .*? '*/' -> skip
 ;
 
 WS

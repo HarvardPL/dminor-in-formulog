@@ -54,7 +54,7 @@
 				<configuration>
 					<archive>
 						<manifest>
-							<mainClass>edu.harvard.seas.pl.formulog.Main</mainClass>
+							<mainClass>edu.harvard.seas.pl.dminor_to_formulog.Main</mainClass>
 						</manifest>
 					</archive>
 					<descriptorRefs>

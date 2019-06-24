@@ -93,7 +93,8 @@ public final class Extractor {
 					paramsAndTypes.add(new Pair<>(param, type));
 				}
 				String retType = ctx.typ().accept(typeExtractor);
-				funcs.add(new Function(name, paramsAndTypes, retType));
+				String body = ctx.expr().accept(exprExtractor);
+				funcs.add(new Function(name, paramsAndTypes, retType, body));
 				return null;
 			}
 
@@ -115,7 +116,7 @@ public final class Extractor {
 			public String visitUnopExpr(UnopExprContext ctx) {
 				String s = "e_unop(";
 				switch (ctx.unop.getType()) {
-				case DminorParser.NEG:
+				case DminorParser.SUB:
 					s += "u_neg, ";
 					break;
 				case DminorParser.NOT:
@@ -139,14 +140,14 @@ public final class Extractor {
 			@Override
 			public String visitCallExpr(CallExprContext ctx) {
 				List<String> args = ctx.args().expr().stream().map(e -> e.accept(this)).collect(Collectors.toList());
-				String s = "e_app(" + ctx.func.getText();
+				String s = "e_app(\"" + ctx.func.getText() + "\", [";
 				for (Iterator<String> it = args.iterator(); it.hasNext();) {
 					s += it.next();
 					if (it.hasNext()) {
 						s += ", ";
 					}
 				}
-				s += ")";
+				s += "])";
 				return s;
 			}
 
