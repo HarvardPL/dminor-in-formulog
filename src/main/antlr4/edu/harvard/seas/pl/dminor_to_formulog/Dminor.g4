@@ -19,13 +19,24 @@ typ
 	ID # namedType
 	| '{' typ '*' '}' # collType
 	| '{' expr '}' # singletonType
-	| '{' recordEntries '}' # recordType
+	| '{' recordDefEntries '}' # recordType
 	| typ '|' typ # unionType
+	| typ 'where' expr # refinementType
 ;
 
-recordEntries
+recordDefEntries
 :
+	(
+		recordDefEntry
+		(
+			';' recordDefEntry
+		)* ';'?
+	)?
+;
 
+recordDefEntry
+:
+	ID ':' typ
 ;
 
 funcDef
@@ -54,6 +65,8 @@ expr
 	| NUM # numExpr
 	| STR # strExpr
 	| ID # varExpr
+	| expr '.' ID # recordGetExpr
+	| '{' recordEntries '}' # recordMakeExpr
 	| unop =
 	(
 		SUB
@@ -80,6 +93,21 @@ expr
 	| lhs = expr binop = OR rhs = expr # binopExpr
 	| '(' cond = expr ')' '?' thenBranch = expr ':' elseBranch = expr # condExpr
 	| 'let' var = ID '=' val = expr 'in' cont = expr # letExpr
+;
+
+recordEntries
+:
+	(
+		recordEntry
+		(
+			',' recordEntry
+		)*
+	)?
+;
+
+recordEntry
+:
+	ID '=>' expr
 ;
 
 args

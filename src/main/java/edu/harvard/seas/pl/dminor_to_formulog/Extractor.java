@@ -24,6 +24,12 @@ import edu.harvard.seas.pl.dminor_to_formulog.DminorParser.NamedTypeContext;
 import edu.harvard.seas.pl.dminor_to_formulog.DminorParser.NumExprContext;
 import edu.harvard.seas.pl.dminor_to_formulog.DminorParser.ParamContext;
 import edu.harvard.seas.pl.dminor_to_formulog.DminorParser.ParenExprContext;
+import edu.harvard.seas.pl.dminor_to_formulog.DminorParser.RecordDefEntryContext;
+import edu.harvard.seas.pl.dminor_to_formulog.DminorParser.RecordEntryContext;
+import edu.harvard.seas.pl.dminor_to_formulog.DminorParser.RecordGetExprContext;
+import edu.harvard.seas.pl.dminor_to_formulog.DminorParser.RecordMakeExprContext;
+import edu.harvard.seas.pl.dminor_to_formulog.DminorParser.RecordTypeContext;
+import edu.harvard.seas.pl.dminor_to_formulog.DminorParser.RefinementTypeContext;
 import edu.harvard.seas.pl.dminor_to_formulog.DminorParser.StrExprContext;
 import edu.harvard.seas.pl.dminor_to_formulog.DminorParser.UnopExprContext;
 import edu.harvard.seas.pl.dminor_to_formulog.DminorParser.VarExprContext;
@@ -77,6 +83,28 @@ public final class Extractor {
 					throw new AssertionError("Unrecognized type: " + name);
 				}
 				return type;
+			}
+
+			@Override
+			public String visitRecordType(RecordTypeContext ctx) {
+				String type = "t_any";
+				for (RecordDefEntryContext rectx : ctx.recordDefEntries().recordDefEntry()) {
+					String label = "\"" + rectx.ID().getText() + "\"";
+					String entryType = rectx.typ().accept(this);
+					type = "intersection_type(t_entity(" + label + ", " + entryType + "), " + type + ")";
+				}
+				return type;
+			}
+			
+			@Override
+			public String visitRefinementType(RefinementTypeContext ctx) {
+				bumpValueCnt();
+				String val = toVar("value");
+				String type = ctx.typ().accept(this);
+				String expr = ctx.expr().accept(exprExtractor);
+				// Bump value again, just to be safe.
+				bumpValueCnt();
+				return "t_refine(" + val + ", " + type + ", " + expr + ")";
 			}
 
 		};
@@ -150,6 +178,31 @@ public final class Extractor {
 				s += "])";
 				return s;
 			}
+			
+			@Override
+			public String visitRecordGetExpr(RecordGetExprContext ctx) {
+				String expr = ctx.expr().accept(this);
+				String label = "\"" + ctx.ID().getText() + "\"";
+				return "e_select(" + expr + ", " + label + ")";
+			}
+			
+			@Override
+			public String visitRecordMakeExpr(RecordMakeExprContext ctx) {
+				String s = "e_entity([";
+				for (Iterator<RecordEntryContext> it = ctx.recordEntries().recordEntry().iterator(); it.hasNext();) {
+					RecordEntryContext rectx = it.next();
+					s += "(\"";
+					s += rectx.ID().getText();
+					s += "\", ";
+					s += rectx.expr().accept(this);
+					s += ")";
+					if (it.hasNext()) {
+						s += ", ";
+					}
+				}
+				s += "])";
+				return s;
+			}
 
 			@Override
 			public String visitBinopExpr(BinopExprContext ctx) {
@@ -209,8 +262,17 @@ public final class Extractor {
 			}
 
 		};
+		
+		private int valueCnt = 0;
 
+		private void bumpValueCnt() {
+			++valueCnt;
+		}
+		
 		private String toVar(String name) {
+			if (name.equals("value")) {
+				name = "value" + valueCnt;
+			}
 			return "#" + name + "[value]";
 		}
 
