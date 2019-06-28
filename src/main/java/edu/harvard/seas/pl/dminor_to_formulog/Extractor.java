@@ -64,7 +64,7 @@ public final class Extractor {
 		private final Map<String, String> typeAlias = new HashMap<>();
 
 		private final List<Function> funcs = new ArrayList<>();
-		
+
 		private final Map<String, String> typeIndicatorFuncs = new HashMap<>();
 
 		public ModuleExtractor() {
@@ -88,15 +88,11 @@ public final class Extractor {
 			ctx.typ().accept(tne);
 			if (tne.getTypeNames().contains(typeName)) {
 				String funcName = "$" + typeName;
-				bumpValueCnt();
-				String x = toVar("value");
-				bumpValueCnt();
+				String x = freshVar();
 				String type = "t_refine(" + x + ", " + "t_any, " + "e_app(\"" + funcName + "\", [e_var(" + x + ")]))";
 				typeAlias.put(typeName, type);
 				String recType = ctx.typ().accept(typeExtractor);
-				bumpValueCnt();
-				x = toVar("value");
-				bumpValueCnt();
+				x = freshVar();
 				String body = "e_type_test(e_var(" + x + "), " + recType + ")";
 				List<Pair<String, String>> params = Collections.singletonList(new Pair<>(x, "t_any"));
 				Function func = new Function(funcName, params, "t_bool", body, true);
@@ -146,21 +142,19 @@ public final class Extractor {
 				}
 				return type;
 			}
-			
+
 			private String makeRecordType(RecordDefEntryContext ctx) {
-					String label = "\"" + ctx.ID().getText() + "\"";
-					String entryType = ctx.typ().accept(this);
-					return "t_entity(" + label + ", " + entryType + ")";
+				String label = "\"" + ctx.ID().getText() + "\"";
+				String entryType = ctx.typ().accept(this);
+				return "t_entity(" + label + ", " + entryType + ")";
 			}
 
 			@Override
 			public String visitRefinementType(RefinementTypeContext ctx) {
-				bumpValueCnt();
-				String val = toVar("value");
+				String val = incrValueCnt();
 				String type = ctx.typ().accept(this);
 				String expr = ctx.expr().accept(exprExtractor);
-				// Bump value again, just to be safe.
-				bumpValueCnt();
+				decrValueCnt();
 				return "t_refine(" + val + ", " + type + ", " + expr + ")";
 			}
 
@@ -266,8 +260,19 @@ public final class Extractor {
 			@Override
 			public String visitRecordGetExpr(RecordGetExprContext ctx) {
 				String expr = ctx.expr().accept(this);
-				String label = "\"" + ctx.ID().getText() + "\"";
-				return "e_select(" + expr + ", " + label + ")";
+				String label = ctx.ID().getText();
+				if (label.equals("Count")) {
+					return makeCount(expr);
+				} else {
+					return "e_select(" + expr + ", \"" + label + "\")";
+				}
+			}
+
+			private String makeCount(String expr) {
+				String x = freshVar();
+				String y = freshVar();
+				return makeAccum(x, expr, y, "e_ascribe(e_int(0), t_int)",
+						"e_binop(b_add, e_var(" + y + "), e_int(1))");
 			}
 
 			@Override
@@ -373,15 +378,32 @@ public final class Extractor {
 				String y = toVar(ctx.y.getText());
 				String init = ctx.init.accept(this);
 				String accum = ctx.accum.accept(this);
+				return makeAccum(x, from, y, init, accum);
+			}
+
+			private String makeAccum(String x, String from, String y, String init, String accum) {
 				return "e_accum(" + x + ", " + from + ", " + y + ", " + init + ", " + accum + ")";
 			}
 
 		};
 
 		private int valueCnt = 0;
+		private int varCnt = 0;
 
-		private void bumpValueCnt() {
-			++valueCnt;
+		private String incrValueCnt() {
+			valueCnt++;
+			String s = toVar("value");
+			return s;
+		}
+		
+		private void decrValueCnt() {
+			valueCnt--;
+		}
+		
+		private String freshVar() {
+			String x = toVar("x" + varCnt);
+			varCnt++;
+			return x;
 		}
 
 		private String toVar(String name) {
