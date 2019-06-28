@@ -18,8 +18,8 @@ typ
 :
 	ID # namedType
 	| '{' typ '*' '}' # collType
-	| '{' expr '}' # singletonType
 	| '{' recordDefEntries '}' # recordType
+	| '{' expr '}' # singletonType
 	| typ '|' typ # unionType
 	| typ 'where' expr # refinementType
 ;
@@ -91,8 +91,12 @@ expr
 	| lhs = expr binop = CMPEQ rhs = expr # binopExpr
 	| lhs = expr binop = AND rhs = expr # binopExpr
 	| lhs = expr binop = OR rhs = expr # binopExpr
-	| '(' cond = expr ')' '?' thenBranch = expr ':' elseBranch = expr # condExpr
+	| cond = expr '?' thenBranch = expr ':' elseBranch = expr # condExpr
 	| 'let' var = ID '=' val = expr 'in' cont = expr # letExpr
+	| 'from' var = ID 'in' from = expr 'select' select = expr # fromSelectExpr
+	| 'from' var = ID 'in' from = expr 'where' where = expr 'select' select = expr # fromWhereSelectExpr
+	| 'from' x = ID 'in' from = expr 'let' y = ID '=' init = expr 'accumulate' accum = expr # accumExpr
+	| expr ':' typ # ascribeExpr
 ;
 
 recordEntries

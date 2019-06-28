@@ -12,32 +12,37 @@ public final class Relationizer {
 	private Relationizer() {
 		throw new AssertionError("impossible");
 	}
-	
+
 	public static Map<String, List<String[]>> relationize(Module mod) {
 		return (new Impl(mod)).run();
 	}
 
 	private static final String funcSig = "func_sig";
 	private static final String labeledPure = "labeled_pure";
-	
+	private static final String typeIndicatorFunc = "type_indicator_func";
+
 	private static class Impl {
-	
+
 		private final Module mod;
 		private final Map<String, List<String[]>> db = new HashMap<>();
-		
+
 		public Impl(Module mod) {
 			this.mod = mod;
 			db.put(funcSig, new ArrayList<>());
 			db.put(labeledPure, new ArrayList<>());
+			db.put(typeIndicatorFunc, new ArrayList<>());
 		}
-		
+
 		public Map<String, List<String[]>> run() {
 			for (Function func : mod.getFuncs()) {
 				processFunc(func);
 			}
+			for (Map.Entry<String, String> e : mod.getTypeIndicatorFuncs().entrySet()) {
+				db.get(typeIndicatorFunc).add(new String[] { "\"" + e.getKey() + "\"", e.getValue() });
+			}
 			return db;
 		}
-		
+
 		private void processFunc(Function func) {
 			String[] ss = new String[4];
 			String params = "[";
@@ -56,8 +61,11 @@ public final class Relationizer {
 			ss[2] = func.getRetType();
 			ss[3] = func.getBody();
 			db.get(funcSig).add(ss);
+			if (func.isPure()) {
+				db.get(labeledPure).add(new String[] { ss[0] });
+			}
 		}
-		
+
 	}
-	
+
 }

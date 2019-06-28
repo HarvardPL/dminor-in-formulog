@@ -1,15 +1,18 @@
 package edu.harvard.seas.pl.dminor_to_formulog;
 
 import java.util.List;
+import java.util.Map;
 
 public class Module {
 
 	private final String name;
 	private final List<Function> funcs;
+	private final Map<String, String> typeIndicatorFuncs;
 	
-	public Module(String name, List<Function> funcs) {
+	public Module(String name, List<Function> funcs, Map<String, String> typeIndicatorFuncs) {
 		this.name = name;
 		this.funcs = funcs;
+		this.typeIndicatorFuncs = typeIndicatorFuncs;
 	}
 
 	public String getName() {
@@ -19,6 +22,10 @@ public class Module {
 	public List<Function> getFuncs() {
 		return funcs;
 	}
+	
+	public Map<String, String> getTypeIndicatorFuncs() {
+		return typeIndicatorFuncs;
+	}
 
 	@Override
 	public int hashCode() {
@@ -26,6 +33,7 @@ public class Module {
 		int result = 1;
 		result = prime * result + ((funcs == null) ? 0 : funcs.hashCode());
 		result = prime * result + ((name == null) ? 0 : name.hashCode());
+		result = prime * result + ((typeIndicatorFuncs == null) ? 0 : typeIndicatorFuncs.hashCode());
 		return result;
 	}
 
@@ -48,7 +56,12 @@ public class Module {
 				return false;
 		} else if (!name.equals(other.name))
 			return false;
+		if (typeIndicatorFuncs == null) {
+			if (other.typeIndicatorFuncs != null)
+				return false;
+		} else if (!typeIndicatorFuncs.equals(other.typeIndicatorFuncs))
+			return false;
 		return true;
-	}	
-	
+	}
+
 }

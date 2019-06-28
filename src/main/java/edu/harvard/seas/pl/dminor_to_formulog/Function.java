@@ -10,12 +10,14 @@ public class Function {
 	private final List<Pair<String, String>> paramsAndTypes;
 	private final String retType;
 	private final String body;
+	private final boolean isPure;
 	
-	public Function(String name, List<Pair<String, String>> paramsAndTypes, String retType, String body) {
+	public Function(String name, List<Pair<String, String>> paramsAndTypes, String retType, String body, boolean isPure) {
 		this.name = name;
 		this.paramsAndTypes = paramsAndTypes;
 		this.retType = retType;
 		this.body = body;
+		this.isPure = isPure;
 	}
 
 	public String getName() {
@@ -33,12 +35,17 @@ public class Function {
 	public String getBody() {
 		return body;
 	}
+	
+	public boolean isPure() {
+		return isPure;
+	}
 
 	@Override
 	public int hashCode() {
 		final int prime = 31;
 		int result = 1;
 		result = prime * result + ((body == null) ? 0 : body.hashCode());
+		result = prime * result + (isPure ? 1231 : 1237);
 		result = prime * result + ((name == null) ? 0 : name.hashCode());
 		result = prime * result + ((paramsAndTypes == null) ? 0 : paramsAndTypes.hashCode());
 		result = prime * result + ((retType == null) ? 0 : retType.hashCode());
@@ -58,6 +65,8 @@ public class Function {
 			if (other.body != null)
 				return false;
 		} else if (!body.equals(other.body))
+			return false;
+		if (isPure != other.isPure)
 			return false;
 		if (name == null) {
 			if (other.name != null)

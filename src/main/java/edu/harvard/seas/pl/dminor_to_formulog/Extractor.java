@@ -3,10 +3,13 @@ package edu.harvard.seas.pl.dminor_to_formulog;
 import java.io.IOException;
 import java.io.Reader;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.stream.Collectors;
 
 import org.antlr.v4.runtime.CharStream;
@@ -14,9 +17,14 @@ import org.antlr.v4.runtime.CharStreams;
 import org.antlr.v4.runtime.CommonTokenStream;
 import org.antlr.v4.runtime.misc.Pair;
 
+import edu.harvard.seas.pl.dminor_to_formulog.DminorParser.AccumExprContext;
+import edu.harvard.seas.pl.dminor_to_formulog.DminorParser.AscribeExprContext;
 import edu.harvard.seas.pl.dminor_to_formulog.DminorParser.BinopExprContext;
 import edu.harvard.seas.pl.dminor_to_formulog.DminorParser.CallExprContext;
+import edu.harvard.seas.pl.dminor_to_formulog.DminorParser.CollTypeContext;
 import edu.harvard.seas.pl.dminor_to_formulog.DminorParser.CondExprContext;
+import edu.harvard.seas.pl.dminor_to_formulog.DminorParser.FromSelectExprContext;
+import edu.harvard.seas.pl.dminor_to_formulog.DminorParser.FromWhereSelectExprContext;
 import edu.harvard.seas.pl.dminor_to_formulog.DminorParser.FuncDefContext;
 import edu.harvard.seas.pl.dminor_to_formulog.DminorParser.LetExprContext;
 import edu.harvard.seas.pl.dminor_to_formulog.DminorParser.ModuleContext;
@@ -30,7 +38,10 @@ import edu.harvard.seas.pl.dminor_to_formulog.DminorParser.RecordGetExprContext;
 import edu.harvard.seas.pl.dminor_to_formulog.DminorParser.RecordMakeExprContext;
 import edu.harvard.seas.pl.dminor_to_formulog.DminorParser.RecordTypeContext;
 import edu.harvard.seas.pl.dminor_to_formulog.DminorParser.RefinementTypeContext;
+import edu.harvard.seas.pl.dminor_to_formulog.DminorParser.SingletonTypeContext;
 import edu.harvard.seas.pl.dminor_to_formulog.DminorParser.StrExprContext;
+import edu.harvard.seas.pl.dminor_to_formulog.DminorParser.TypeDefContext;
+import edu.harvard.seas.pl.dminor_to_formulog.DminorParser.UnionTypeContext;
 import edu.harvard.seas.pl.dminor_to_formulog.DminorParser.UnopExprContext;
 import edu.harvard.seas.pl.dminor_to_formulog.DminorParser.VarExprContext;
 
@@ -53,6 +64,8 @@ public final class Extractor {
 		private final Map<String, String> typeAlias = new HashMap<>();
 
 		private final List<Function> funcs = new ArrayList<>();
+		
+		private final Map<String, String> typeIndicatorFuncs = new HashMap<>();
 
 		public ModuleExtractor() {
 			typeAlias.put("Any", "t_any");
@@ -64,13 +77,52 @@ public final class Extractor {
 		@Override
 		public Module visitModule(ModuleContext ctx) {
 			String name = ctx.name.getText();
-			ctx.typeDef().forEach(typeDef -> {
-				String typeName = typeDef.name.getText();
-				String type = typeDef.typ().accept(typeExtractor);
-				typeAlias.put(typeName, type);
-			});
+			ctx.typeDef().forEach(typeDef -> handleTypeDefinition(typeDef));
 			ctx.funcDef().forEach(func -> func.accept(funcExtractor));
-			return new Module(name, funcs);
+			return new Module(name, funcs, typeIndicatorFuncs);
+		}
+
+		private void handleTypeDefinition(TypeDefContext ctx) {
+			String typeName = ctx.name.getText();
+			TypeNameExtractor tne = new TypeNameExtractor();
+			ctx.typ().accept(tne);
+			if (tne.getTypeNames().contains(typeName)) {
+				String funcName = "$" + typeName;
+				bumpValueCnt();
+				String x = toVar("value");
+				bumpValueCnt();
+				String type = "t_refine(" + x + ", " + "t_any, " + "e_app(\"" + funcName + "\", [e_var(" + x + ")]))";
+				typeAlias.put(typeName, type);
+				String recType = ctx.typ().accept(typeExtractor);
+				bumpValueCnt();
+				x = toVar("value");
+				bumpValueCnt();
+				String body = "e_type_test(e_var(" + x + "), " + recType + ")";
+				List<Pair<String, String>> params = Collections.singletonList(new Pair<>(x, "t_any"));
+				Function func = new Function(funcName, params, "t_bool", body, true);
+				funcs.add(func);
+				typeIndicatorFuncs.put(funcName, recType);
+			} else {
+				String type = ctx.typ().accept(typeExtractor);
+				typeAlias.put(typeName, type);
+			}
+		}
+
+		private class TypeNameExtractor extends DminorBaseVisitor<Void> {
+
+			private final Set<String> typeNames = new HashSet<>();
+
+			public Set<String> getTypeNames() {
+				return typeNames;
+			}
+
+			@Override
+			public Void visitNamedType(NamedTypeContext ctx) {
+				String name = ctx.ID().getText();
+				typeNames.add(name);
+				return null;
+			}
+
 		}
 
 		private final DminorBaseVisitor<String> typeExtractor = new DminorBaseVisitor<String>() {
@@ -87,15 +139,20 @@ public final class Extractor {
 
 			@Override
 			public String visitRecordType(RecordTypeContext ctx) {
-				String type = "t_any";
-				for (RecordDefEntryContext rectx : ctx.recordDefEntries().recordDefEntry()) {
-					String label = "\"" + rectx.ID().getText() + "\"";
-					String entryType = rectx.typ().accept(this);
-					type = "intersection_type(t_entity(" + label + ", " + entryType + "), " + type + ")";
+				List<RecordDefEntryContext> rectxs = new ArrayList<>(ctx.recordDefEntries().recordDefEntry());
+				String type = makeRecordType(rectxs.remove(rectxs.size() - 1));
+				for (RecordDefEntryContext rectx : rectxs) {
+					type = "intersection_type(" + makeRecordType(rectx) + ", " + type + ")";
 				}
 				return type;
 			}
 			
+			private String makeRecordType(RecordDefEntryContext ctx) {
+					String label = "\"" + ctx.ID().getText() + "\"";
+					String entryType = ctx.typ().accept(this);
+					return "t_entity(" + label + ", " + entryType + ")";
+			}
+
 			@Override
 			public String visitRefinementType(RefinementTypeContext ctx) {
 				bumpValueCnt();
@@ -105,6 +162,26 @@ public final class Extractor {
 				// Bump value again, just to be safe.
 				bumpValueCnt();
 				return "t_refine(" + val + ", " + type + ", " + expr + ")";
+			}
+
+			@Override
+			public String visitSingletonType(SingletonTypeContext ctx) {
+				String expr = ctx.expr().accept(exprExtractor);
+				// XXX Not sure if t_any is right or if there is something more exact...
+				return "singleton_type(" + expr + ", t_any)";
+			}
+
+			@Override
+			public String visitUnionType(UnionTypeContext ctx) {
+				String type1 = ctx.typ(0).accept(this);
+				String type2 = ctx.typ(1).accept(this);
+				return "union_type(" + type1 + ", " + type2 + ")";
+			}
+
+			@Override
+			public String visitCollType(CollTypeContext ctx) {
+				String type = ctx.typ().accept(this);
+				return "t_coll(" + type + ")";
 			}
 
 		};
@@ -122,7 +199,7 @@ public final class Extractor {
 				}
 				String retType = ctx.typ().accept(typeExtractor);
 				String body = ctx.expr().accept(exprExtractor);
-				funcs.add(new Function(name, paramsAndTypes, retType, body));
+				funcs.add(new Function(name, paramsAndTypes, retType, body, false));
 				return null;
 			}
 
@@ -138,6 +215,13 @@ public final class Extractor {
 			@Override
 			public String visitVarExpr(VarExprContext ctx) {
 				return "e_var(" + toVar(ctx.ID().getText()) + ")";
+			}
+
+			@Override
+			public String visitAscribeExpr(AscribeExprContext ctx) {
+				String expr = ctx.expr().accept(this);
+				String type = ctx.typ().accept(typeExtractor);
+				return "e_ascribe(" + expr + ", " + type + ")";
 			}
 
 			@Override
@@ -178,14 +262,14 @@ public final class Extractor {
 				s += "])";
 				return s;
 			}
-			
+
 			@Override
 			public String visitRecordGetExpr(RecordGetExprContext ctx) {
 				String expr = ctx.expr().accept(this);
 				String label = "\"" + ctx.ID().getText() + "\"";
 				return "e_select(" + expr + ", " + label + ")";
 			}
-			
+
 			@Override
 			public String visitRecordMakeExpr(RecordMakeExprContext ctx) {
 				String s = "e_entity([";
@@ -202,6 +286,27 @@ public final class Extractor {
 				}
 				s += "])";
 				return s;
+			}
+
+			private String fromWhereSelect(String x, String from, String where, String select) {
+				return "e_query(" + x + ", " + from + ", " + where + ", " + select + ")";
+			}
+
+			@Override
+			public String visitFromSelectExpr(FromSelectExprContext ctx) {
+				String var = toVar(ctx.ID().toString());
+				String from = ctx.from.accept(this);
+				String select = ctx.select.accept(this);
+				return fromWhereSelect(var, from, "e_bool(true)", select);
+			}
+
+			@Override
+			public String visitFromWhereSelectExpr(FromWhereSelectExprContext ctx) {
+				String var = toVar(ctx.ID().toString());
+				String from = ctx.from.accept(this);
+				String select = ctx.select.accept(this);
+				String where = ctx.where.accept(this);
+				return fromWhereSelect(var, from, where, select);
 			}
 
 			@Override
@@ -261,14 +366,24 @@ public final class Extractor {
 				return "e_let(" + var + ", " + val + ", " + cont + ")";
 			}
 
+			@Override
+			public String visitAccumExpr(AccumExprContext ctx) {
+				String x = toVar(ctx.x.getText());
+				String from = ctx.from.accept(this);
+				String y = toVar(ctx.y.getText());
+				String init = ctx.init.accept(this);
+				String accum = ctx.accum.accept(this);
+				return "e_accum(" + x + ", " + from + ", " + y + ", " + init + ", " + accum + ")";
+			}
+
 		};
-		
+
 		private int valueCnt = 0;
 
 		private void bumpValueCnt() {
 			++valueCnt;
 		}
-		
+
 		private String toVar(String name) {
 			if (name.equals("value")) {
 				name = "value" + valueCnt;
