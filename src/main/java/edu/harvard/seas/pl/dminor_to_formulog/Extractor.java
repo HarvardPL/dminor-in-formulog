@@ -208,7 +208,15 @@ public final class Extractor {
 
 			@Override
 			public String visitVarExpr(VarExprContext ctx) {
-				return "e_var(" + toVar(ctx.ID().getText()) + ")";
+				String text = ctx.ID().getText();
+				switch (text) {
+				case "false":
+					return "e_bool(false)";
+				case "true":
+					return "e_bool(true)";
+				default:
+					return "e_var(" + toVar(ctx.ID().getText()) + ")";
+				}
 			}
 
 			@Override
@@ -395,11 +403,11 @@ public final class Extractor {
 			String s = toVar("value");
 			return s;
 		}
-		
+
 		private void decrValueCnt() {
 			valueCnt--;
 		}
-		
+
 		private String freshVar() {
 			String x = toVar("x" + varCnt);
 			varCnt++;
