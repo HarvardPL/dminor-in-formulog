@@ -18,11 +18,14 @@ import org.antlr.v4.runtime.CommonTokenStream;
 import org.antlr.v4.runtime.misc.Pair;
 
 import edu.harvard.seas.pl.dminor_to_formulog.DminorParser.AccumExprContext;
+import edu.harvard.seas.pl.dminor_to_formulog.DminorParser.ArgsContext;
 import edu.harvard.seas.pl.dminor_to_formulog.DminorParser.AscribeExprContext;
 import edu.harvard.seas.pl.dminor_to_formulog.DminorParser.BinopExprContext;
 import edu.harvard.seas.pl.dminor_to_formulog.DminorParser.CallExprContext;
+import edu.harvard.seas.pl.dminor_to_formulog.DminorParser.CollExprContext;
 import edu.harvard.seas.pl.dminor_to_formulog.DminorParser.CollTypeContext;
 import edu.harvard.seas.pl.dminor_to_formulog.DminorParser.CondExprContext;
+import edu.harvard.seas.pl.dminor_to_formulog.DminorParser.ExprContext;
 import edu.harvard.seas.pl.dminor_to_formulog.DminorParser.FromSelectExprContext;
 import edu.harvard.seas.pl.dminor_to_formulog.DminorParser.FromWhereSelectExprContext;
 import edu.harvard.seas.pl.dminor_to_formulog.DminorParser.FuncDefContext;
@@ -253,15 +256,31 @@ public final class Extractor {
 
 			@Override
 			public String visitCallExpr(CallExprContext ctx) {
-				List<String> args = ctx.args().expr().stream().map(e -> e.accept(this)).collect(Collectors.toList());
-				String s = "e_app(\"" + ctx.func.getText() + "\", [";
+				String args = ctx.args().accept(this);
+				return "e_app(\"" + ctx.func.getText() + "\", " + args + ")";
+			}
+		
+			@Override
+			public String visitArgs(ArgsContext ctx) {
+				List<String> args = ctx.expr().stream().map(e -> e.accept(this)).collect(Collectors.toList());
+				String s = "[";
 				for (Iterator<String> it = args.iterator(); it.hasNext();) {
 					s += it.next();
 					if (it.hasNext()) {
 						s += ", ";
 					}
 				}
-				s += "])";
+				s += "]";
+				return s;
+			}
+			
+			@Override
+			public String visitCollExpr(CollExprContext ctx) {
+				String s = "e_coll([])";
+				for (ExprContext ectx : ctx.args().expr()) {
+					String e = ectx.accept(this);
+					s = "e_add(" + e + ", " + s + ")";
+				}
 				return s;
 			}
 
@@ -324,41 +343,49 @@ public final class Extractor {
 
 			@Override
 			public String visitBinopExpr(BinopExprContext ctx) {
-				String s = "e_binop(";
+				String e1 = ctx.lhs.accept(this);
+				String e2 = ctx.rhs.accept(this);
+				String op = null;
 				switch (ctx.binop.getType()) {
 				case DminorParser.ADD:
-					s += "b_add, ";
+					op = "b_add";
 					break;
 				case DminorParser.SUB:
-					s += "b_sub, ";
+					op = "b_sub";
 					break;
 				case DminorParser.MUL:
-					s += "b_mul, ";
+					op = "b_mul";
 					break;
 				case DminorParser.DIV:
-					s += "b_div, ";
+					op = "b_div";
 					break;
 				case DminorParser.CMPEQ:
-					s += "b_eq, ";
+					op = "b_eq";
 					break;
 				case DminorParser.CMPGT:
-					s += "b_gt, ";
+					op = "b_gt";
 					break;
 				case DminorParser.CMPLT:
-					s += "b_lt, ";
+					op = "b_lt";
 					break;
 				case DminorParser.AND:
-					s += "b_and, ";
+					op = "b_and";
 					break;
 				case DminorParser.OR:
-					s += "b_or, ";
+					op = "b_or";
 					break;
+				case DminorParser.CMPNE:
+					return "e_unop(u_not, e_binop(b_eq, " + e1 + ", " + e2 + "))";
+				case DminorParser.UNION:
+					// XXX It seems like we need to translate this in a more
+					// sophisticated way, or somehow infer an ascription for e2
+					String x = freshVar();
+					String y = freshVar();
+					return makeAccum(x, e1, y, e2, "e_add(e_var(" + x + "), " + "e_var(" + y + "))");
 				default:
 					throw new AssertionError("Unexpected operator: " + ctx.binop.getText());
 				}
-				s += ctx.lhs.accept(this) + ", ";
-				s += ctx.rhs.accept(this) + ")";
-				return s;
+				return "e_binop(" + op + ", " + e1 + ", " + e2 + ")";
 			}
 
 			@Override

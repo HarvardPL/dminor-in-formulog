@@ -67,6 +67,7 @@ expr
 	| ID # varExpr
 	| expr '.' ID # recordGetExpr
 	| '{' recordEntries '}' # recordMakeExpr
+	| '{' args '}' # collExpr
 	| unop =
 	(
 		SUB
@@ -77,6 +78,7 @@ expr
 	(
 		MUL
 		| DIV
+		| UNION
 	) rhs = expr # binopExpr
 	| lhs = expr binop =
 	(
@@ -88,7 +90,7 @@ expr
 		CMPGT
 		| CMPLT
 	) rhs = expr # binopExpr
-	| lhs = expr binop = CMPEQ rhs = expr # binopExpr
+	| lhs = expr binop = (CMPEQ | CMPNE) rhs = expr # binopExpr
 	| lhs = expr binop = AND rhs = expr # binopExpr
 	| lhs = expr binop = OR rhs = expr # binopExpr
 	| cond = expr '?' thenBranch = expr ':' elseBranch = expr # condExpr
@@ -124,6 +126,11 @@ args
 	)?
 ;
 
+UNION
+:
+	'++'
+;
+
 NOT
 :
 	'!'
@@ -152,6 +159,11 @@ DIV
 CMPEQ
 :
 	'=='
+;
+
+CMPNE
+:
+	'!='
 ;
 
 CMPGT
