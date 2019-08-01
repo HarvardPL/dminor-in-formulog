@@ -20,6 +20,7 @@ public final class Relationizer {
 	private static final String funcSig = "func_sig";
 	private static final String labeledPure = "labeled_pure";
 	private static final String typeIndicatorFunc = "type_indicator_func";
+	private static final String typeAlias = "type_alias";
 
 	private static class Impl {
 
@@ -30,6 +31,7 @@ public final class Relationizer {
 			this.mod = mod;
 			db.put(funcSig, new ArrayList<>());
 			db.put(labeledPure, new ArrayList<>());
+			db.put(typeAlias, new ArrayList<>());
 			db.put(typeIndicatorFunc, new ArrayList<>());
 		}
 
@@ -39,6 +41,9 @@ public final class Relationizer {
 			}
 			for (Map.Entry<String, String> e : mod.getTypeIndicatorFuncs().entrySet()) {
 				db.get(typeIndicatorFunc).add(new String[] { "\"" + e.getKey() + "\"", e.getValue() });
+			}
+			for (Map.Entry<String, String> e : mod.getTypeAliases().entrySet()) {
+				db.get(typeAlias).add(new String[] { "\"" + e.getKey() + "\"", e.getValue() });
 			}
 			return db;
 		}

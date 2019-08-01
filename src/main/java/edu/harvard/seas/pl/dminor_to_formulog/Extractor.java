@@ -82,7 +82,7 @@ public final class Extractor {
 			String name = ctx.name.getText();
 			ctx.typeDef().forEach(typeDef -> handleTypeDefinition(typeDef));
 			ctx.funcDef().forEach(func -> func.accept(funcExtractor));
-			return new Module(name, funcs, typeIndicatorFuncs);
+			return new Module(name, funcs, typeAlias, typeIndicatorFuncs);
 		}
 
 		private void handleTypeDefinition(TypeDefContext ctx) {
@@ -377,11 +377,7 @@ public final class Extractor {
 				case DminorParser.CMPNE:
 					return "e_unop(u_not, e_binop(b_eq, " + e1 + ", " + e2 + "))";
 				case DminorParser.UNION:
-					// XXX It seems like we need to translate this in a more
-					// sophisticated way, or somehow infer an ascription for e2
-					String x = freshVar();
-					String y = freshVar();
-					return makeAccum(x, e1, y, e2, "e_add(e_var(" + x + "), " + "e_var(" + y + "))");
+					return "e_union(" + e1 + ", " + e2 + ")";
 				default:
 					throw new AssertionError("Unexpected operator: " + ctx.binop.getText());
 				}
