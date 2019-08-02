@@ -5,7 +5,6 @@
 ********************************************************/
 module SimpleWhileInterpreter
 {
-/*
     type Operator : Text where
       value=="plus" || value=="minus" ||
       value=="times" //|| value=="div"
@@ -17,25 +16,21 @@ module SimpleWhileInterpreter
     {kind:{"binary app"}; operator: Operator;
       arg1: Expression; arg2: Expression;};
     
-
     type Statement :
     {kind:{"assignment"}; var: Text; rhs: Expression;} |
     {kind:{"while"}; test:Expression; body:Statement;} |
     {kind:{"if"}; test:Expression; tt:Statement; ff:Statement;} |
     {kind:{"seq"}; s1:Statement; s2:Statement;} |
     {kind:{"skip"};};
-*/
 
     type Store : {{name:Text; val:Integer32;}*};
-
-/*	    
-    Var(name:Text) : Expression { {kind=>"variable", name =>name} }    
+    
+    Var(name:Text) : Expression { {kind=>"variable", name =>name} }
     Int(val : Integer32) : Expression { {kind=>"integer", val=>val} }    
     Plus(arg1 : Expression, arg2 : Expression) : Expression { {kind=>"binary app", operator=>"plus", arg1=>arg1, arg2=>arg2} }
     Minus(arg1 : Expression, arg2 : Expression) : Expression { {kind=>"binary app", operator=>"minus", arg1=>arg1, arg2=>arg2} }
     Times(arg1 : Expression, arg2 : Expression) : Expression { {kind=>"binary app", operator=>"times", arg1=>arg1, arg2=>arg2} }
     Leq(arg1 : Expression, arg2 : Expression) : Expression { {kind=>"binary app", operator=>"<=", arg1=>arg1, arg2=>arg2} }
-
 
     Assign(var: Text, rhs: Expression) : Statement { {kind=>"assignment", var => var, rhs => rhs} }
     While(test:Expression,body:Statement) : Statement { {kind=>"while", test=>test, body=>body} }
@@ -47,21 +42,17 @@ module SimpleWhileInterpreter
     BreakSingleton(xs : Store where value.Count == 1) : Integer32 {
         from x in xs let n = 0 : Integer32 accumulate x.val
     }
-
     
     // Non-termination is maybe not the best way to signal errors
     Error() : Any where false { Error() }
-*/
-    Lookup (st:Store, n:Text) : Any /*Integer32*/
+
+    Lookup (st:Store, n:Text) : Integer32
     {
         let match = (from x in st where x.name == n select x) in
-		match.Count /* == 1 */ /*(match.Count == 1) ? 42 : 21*/
-/*
-		(match.Count == 1) ? BreakSingleton(match) : Error()
-*/
+        (match.Count == 1) ? BreakSingleton(match) : Error()
     }
     
- /*   
+    
     Evaluate(e:Expression, st:Store) : Integer32
     {
        (e.kind == "variable") ? Lookup(st,e.name) : ( 
@@ -130,5 +121,4 @@ module SimpleWhileInterpreter
         let res = Interpret(Fact10(), {}) in
             Evaluate(Var("f"),res)
     }
-*/
 }
