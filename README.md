@@ -7,5 +7,5 @@ To run it on a Dminor file, use
 ```
 java -jar target/dminor-to-formulog-0.0.1-SNAPSHOT-jar-with-dependencies.jar [file]
 ```
-This will create a directory `[file]_facts` in the same directory as the input
+This will create a directory `[file]_facts/` in the same directory as the input
 file; this directory contains CSV files of Formulog input facts.
