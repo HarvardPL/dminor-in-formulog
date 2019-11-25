@@ -1,0 +1,1445 @@
+(*-
+ * #%L
+ * Formulog
+ * %%
+ * Copyright (C) 2018 - 2019 President and Fellows of Harvard College
+ * %%
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ * 
+ *      http://www.apache.org/licenses/LICENSE-2.0
+ * 
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ * #L%
+ *)
+
+(*******************************************************************************
+  Helpers 
+*******************************************************************************)
+
+type ('k, 'v) map = ('k * 'v) list
+fun get(K: 'k, M: ('k, 'v) map) : 'v option =
+  match M with
+  | [] => none
+  | (X, V) :: M => if X = K then some(V) else get(K, M)
+  end
+fun put(K: 'k, V: 'v, M: ('k, 'v) map) : ('k, 'v) map = (K, V) :: M
+
+fun length(Xs: 'a list) : i32 =
+  match Xs with
+  | [] => 0
+  | _ :: Rest => 1 + length(Rest)
+  end
+
+fun append(Xs: 'a list, Ys: 'a list) : 'a list =
+  match Xs with
+  | [] => Ys
+  | X :: Xs => X :: append(Xs, Ys)
+  end
+
+fun flatten(Xs: 'a list list) : 'a list =
+  match Xs with
+  | [] => []
+  | X :: Xs => append(X, flatten(Xs))
+  end
+
+fun zip(Xs: 'a list, Ys: 'b list) : ('a * 'b) list =
+  match (Xs, Ys) with
+  | ([], []) => []
+  | (X :: Xs, Y :: Ys) => (X, Y) :: zip(Xs, Ys)
+  end
+
+fun unzip(Xs: ('a * 'b) list) : ('a list * 'b list) =
+  match Xs with
+  | [] => ([], [])
+  | (A, B) :: Rest => let (As, Bs) = unzip(Rest) in (A :: As, B :: Bs)
+  end
+
+fun fail(_Msg: 'a) : bool =
+  match true with
+  | false => true
+  end
+
+fun assert(Cond: bool, Msg: 'a) : bool =
+  if Cond then true else fail(Msg)
+
+fun z3_timeout : i32 option = some(100)
+
+(*******************************************************************************
+  Program representation 
+*******************************************************************************)
+
+type value =
+  | v_null
+  | v_int(i32)
+  | v_bool(bool)
+  | v_str(string)
+  | v_coll(value list)
+  | v_entity((string, value) map)
+
+type binop =
+  | b_eq
+  | b_lt
+  | b_gt
+  | b_and
+  | b_or
+  | b_add
+  | b_sub
+  | b_mul
+
+type unop =
+  | u_neg
+  | u_not
+
+type var = value sym
+
+type exp =
+  | e_var(var)
+  | e_null
+  | e_int(i32)
+  | e_bool(bool)
+  | e_str(string)
+  | e_coll(value list)
+  | e_type_test(exp, typ)
+  | e_binop(binop, exp, exp)
+  | e_unop(unop, exp)
+  | e_cond(exp, exp, exp)
+  | e_let(var, exp, exp)
+  | e_add(exp, exp)
+  | e_union(exp, exp)
+  | e_accum(var, exp, var, exp, exp)
+  | e_query(var, exp, exp, exp) (* from x in e1 where e2 select e3 *)
+  | e_ascribe(exp, typ)
+  | e_entity((string, exp) map)
+  | e_select(exp, string)
+  | e_app(string, exp list)
+and typ =
+  | t_any
+  | t_int
+  | t_str
+  | t_bool
+  | t_coll(typ)
+  | t_refine(var, typ, exp)
+  | t_entity(string, typ)
+
+fun v2e(V: value) : exp =
+  match V with
+  | v_null => e_null
+  | v_str(S) => e_str(S)
+  | v_bool(B) => e_bool(B)
+  | v_int(I) => e_int(I)
+  | v_coll(Xs) => e_coll(Xs)
+  | v_entity(Elts) =>
+    let (Ls, Vs) = unzip(Elts) in
+    e_entity(zip(Ls, vs2es(Vs)))
+  end
+and vs2es(Vs: value list) : exp list =
+  match Vs with
+  | [] => []
+  | V :: Rest => v2e(V) :: vs2es(Rest)
+  end
+
+fun query2accum(X: var, E1: exp, E2: exp, E3: exp) : exp =
+  let Y = #{(X, E1, E2, E3)}[value] in
+  let Yv = e_var(Y) in
+  e_accum(X, E1, Y, e_coll([]), e_cond(E2, e_add(E3, Yv), Yv))
+
+fun union2accum(E1: exp, E2: exp) : exp =
+  let X = #{(E1, E2)}[value] in
+  let Y = #{X}[value] in
+  e_accum(X, E1, Y, E2, e_add(e_var(X), e_var(Y)))
+
+@external
+input func_sig(string, (var * typ) list, typ, exp)
+@external
+input labeled_pure(string)
+@external
+input type_alias(string, typ)
+@external
+input type_indicator_func(string, typ)
+
+(*******************************************************************************
+  Substitution 
+*******************************************************************************)
+
+type subst = (var, exp) map
+
+fun subst_exp(M: subst, E: exp) : exp =
+  match E with
+  | e_var(X) =>
+    match get(X, M) with
+    | some(V) => V
+    | none => E
+    end
+  | e_null | e_str(_) | e_int(_) | e_bool(_) | e_coll(_) => E
+  | e_type_test(E, T) => e_type_test(subst_exp(M, E), subst_typ(M, T))
+  | e_binop(B, E1, E2) => e_binop(B, subst_exp(M, E1), subst_exp(M, E2))
+  | e_unop(U, E) => e_unop(U, subst_exp(M, E))
+  | e_cond(E1, E2, E3) =>
+    let E1 = subst_exp(M, E1) in
+    let E2 = subst_exp(M, E2) in
+    let E3 = subst_exp(M, E3) in
+    e_cond(E1, E2, E3)
+  | e_let(X, E1, E2) =>
+    let E1 = subst_exp(M, E1) in
+    let Y = #{(E1, E2, M)}[value] in
+    let M = put(X, e_var(Y), M) in
+    let E2 = subst_exp(M, E2) in
+    e_let(Y, E1, E2)
+  | e_add(E1, E2) => e_add(subst_exp(M, E1), subst_exp(M, E2))
+  | e_union(E1, E2) => e_union(subst_exp(M, E1), subst_exp(M, E2))
+  | e_accum(X, E1, Y, E2, E3) =>
+    let E1 = subst_exp(M, E1) in
+    let E2 = subst_exp(M, E2) in
+    let New_y = #{(E1, E2, M)}[value] in
+    let M = put(Y, e_var(New_y), M) in
+    let New_x = #{(E1, E2, M)}[value] in
+    let M = put(X, e_var(New_x), M) in
+    e_accum(New_x, E1, New_y, E2, subst_exp(M, E3))
+  | e_query(X, E1, E2, E3) =>
+    let E1 = subst_exp(M, E1) in
+    let New_x = #{(E1, M)}[value] in
+    let M = put(X, e_var(New_x), M) in
+    e_query(New_x, E1, subst_exp(M, E2), subst_exp(M, E3))
+  | e_ascribe(E, T) => e_ascribe(subst_exp(M, E), subst_typ(M, T))
+  | e_entity(Elts) => e_entity(subst_entity(M, Elts))
+  | e_select(E, L) => e_select(subst_exp(M, E), L)
+  | e_app(F, Es) => e_app(F, subst_exps(M, Es))
+  end
+and subst_entity(M: subst, Elts: (string, exp) map) : (string, exp) map =
+  match Elts with
+  | [] => []
+  | (L, E) :: Rest  => (L, subst_exp(M, E)) :: subst_entity(M, Rest)
+  end
+and subst_exps(M: subst, Es: exp list) : exp list =
+  match Es with
+  | [] => []
+  | E :: Rest => subst_exp(M, E) :: subst_exps(M, Rest)
+  end
+and subst_typ(M: subst, T: typ) : typ =
+  match T with
+  | t_refine(X, T, E) =>
+    let T = subst_typ(M, T) in
+    let Y = #{(E, M, T)}[value] in
+    let M = put(X, e_var(Y), M) in
+    let E = subst_exp(M, E) in
+    t_refine(Y, T, E)
+  | t_coll(T) => t_coll(subst_typ(M, T))
+  | t_entity(L, T) => t_entity(L, subst_typ(M, T))
+  | _ => T
+  end
+
+fun subst_exp1(X: var, V: exp, E: exp) : exp = subst_exp([(X, V)], E)
+fun subst_typ1(X: var, V: exp, T: typ) : typ = subst_typ([(X, V)], T)
+
+(*******************************************************************************
+  Free variables
+*******************************************************************************)
+
+fun is_free_in_exp(X: var, E: exp) : bool =
+  match E with
+  | e_var(Y) => X = Y
+  | e_null | e_int(_) | e_bool(_) | e_str(_) | e_coll(_) => false
+  | e_ascribe(E, T)
+  | e_type_test(E, T) => is_free_in_exp(X, E) || is_free_in_type(X, T)
+  | e_add(E1, E2)
+  | e_union(E1, E2)
+  | e_binop(_, E1, E2) => is_free_in_exp(X, E1) || is_free_in_exp(X, E2)
+  | e_select(E, _)
+  | e_unop(_, E) => is_free_in_exp(X, E)
+  | e_cond(E1, E2, E3) =>
+    is_free_in_exp(X, E1) || is_free_in_exp(X, E2) || is_free_in_exp(X, E3)
+  | e_let(Y, E1, E2) =>
+    is_free_in_exp(X, E1) || (X != Y && is_free_in_exp(X, E2))
+  | e_accum(Y, E1, Z, E2, E3) =>
+    is_free_in_exp(X, E1) || is_free_in_exp(X, E2) ||
+      (X != Y && X != Z && is_free_in_exp(X, E3))
+  | e_query(Y, E1, E2, E3) =>
+    is_free_in_exp(X, E1) ||
+      (X != Y && (is_free_in_exp(X, E2) || is_free_in_exp(X, E3)))
+  | e_entity(Elts) => let (_, Es) = unzip(Elts) in is_free_in_exps(X, Es)
+  | e_app(_, Es) => is_free_in_exps(X, Es)
+  end
+and is_free_in_exps(X: var, Es: exp list) : bool =
+  match Es with
+  | [] => false
+  | E :: Es => is_free_in_exp(X, E) || is_free_in_exps(X, Es)
+  end
+and is_free_in_type(X: var, Ty: typ) : bool =
+  match Ty with
+  | t_any | t_int | t_str | t_bool => false
+  | t_entity(_, Ty)
+  | t_coll(Ty) => is_free_in_type(X, Ty)
+  | t_refine(Y, Ty, E) =>
+    X != Y && (is_free_in_type(X, Ty) || is_free_in_exp(X, E))
+  end
+
+(*******************************************************************************
+  Environments 
+*******************************************************************************)
+
+type entry =
+  | env_bind(var, typ)
+  | env_cond(exp).
+type env = entry list
+
+fun lookup(X: var, Env: env) : typ option =
+  match Env with
+  | [] => none
+  | env_bind(Y, T) :: Env =>
+    if X = Y then some(T) else lookup(X, Env)
+  | env_cond(_) :: Env => lookup(X, Env)
+  end
+
+(*******************************************************************************
+  Encoding 
+*******************************************************************************)
+
+uninterpreted sort v_bag
+uninterpreted sort sv_map
+
+type enc_val =
+  | ev_null
+  | ev_int(int)
+  | ev_bool(bool)
+  | ev_str(string)
+  | ev_coll(v_bag)
+  | ev_entity(sv_map)
+
+type v_bag_array = (enc_val, int) array
+
+uninterpreted fun alphab(v_bag smt) : v_bag_array smt
+uninterpreted fun betab(v_bag_array smt) : v_bag smt
+uninterpreted fun finite(v_bag_array smt) : bool smt
+uninterpreted fun positive(v_bag_array smt) : bool smt
+uninterpreted fun good_c(enc_val smt) : bool smt
+
+fun coll_axiom1 : bool smt =
+  let Ab = #ab[v_bag_array] in
+  `forall Ab : alphab(betab(Ab)).
+    finite(Ab) /\ positive(Ab) ==> alphab(betab(Ab)) #= Ab`
+
+fun coll_axiom2 : bool smt =
+  let Vb = #bv[v_bag] in
+  `forall Vb : betab(alphab(Vb)).
+    finite(alphab(Vb)) /\ positive(alphab(Vb)) /\ betab(alphab(Vb)) #= Vb`
+
+fun coll_axiom3 : bool smt =
+  let V = #v[enc_val] in
+  let Vb = `alphab(#ev_coll_1(V))` in
+  `forall V : good_c(V).
+    good_c(V) <==> #is_ev_coll(V) /\ finite(Vb) /\ positive(Vb)`
+
+fun coll_axiom4 : bool smt =
+  let A = #a[v_bag_array] in
+  `forall A : finite(A).
+    finite(A) <==> array_default(A) #= int_const(0)`
+
+fun coll_axiom5 : bool smt =
+  let A = #a[v_bag_array] in
+  let V = #v[enc_val] in
+  `forall A : positive(A).
+    positive(A) <==>
+      forall V : array_select(A, V).
+        int_ge(array_select(A, V), int_const(0))`
+
+type sv_map_array = (string, enc_val option) array
+
+uninterpreted fun alpham(sv_map smt) : sv_map_array smt
+uninterpreted fun betam(sv_map_array smt) : sv_map smt
+uninterpreted fun finite_e(sv_map_array smt) : bool smt
+uninterpreted fun good_e(enc_val smt) : bool smt
+uninterpreted fun v_eempty : enc_val smt
+uninterpreted fun v_eupdate(string smt, enc_val smt, enc_val smt) : enc_val smt
+uninterpreted fun v_has_field(string smt, enc_val smt) : bool smt
+uninterpreted fun v_dot(string smt, enc_val smt) : enc_val smt
+
+(* XXX Maybe need patterns? *)
+fun entity_axiom1 : bool smt =
+  let Am = #am[sv_map_array] in
+  `forall Am. finite_e(Am) ==> alpham(betam(Am)) #= Am`
+
+fun entity_axiom2 : bool smt =
+  let Svm = #svm[sv_map] in
+  `forall Svm. finite_e(alpham(Svm)) /\ betam(alpham(Svm)) #= Svm`
+
+fun entity_axiom3 : bool smt =
+  let Svm = #svm[sv_map_array] in
+  `forall Svm : finite_e(Svm). finite_e(Svm) <==> array_default(Svm) #= none`
+
+fun entity_axiom4 : bool smt =
+  let V = #v[enc_val] in
+  `forall V : good_e(V).
+    good_e(V) <==> #is_ev_entity(V) /\ finite_e(alpham(#ev_entity_1(V)))`
+
+fun entity_axiom5 : bool smt =
+  `v_eempty #= ev_entity(betam(array_const(none)))`
+
+fun entity_axiom6 : bool smt =
+  let I = #i[string] in
+  let V = #v[enc_val] in
+  let Svm = #svm[sv_map] in
+  `forall I, V, Svm : v_eupdate(I, V, ev_entity(Svm)).
+    v_eupdate(I, V, ev_entity(Svm)) #=
+      ev_entity(betam(array_store(alpham(Svm), I, some(V))))`
+
+fun entity_axiom7 : bool smt =
+  let I = #i[string] in
+  let Svm = #svm[sv_map] in
+  `forall I, Svm : v_has_field(I, ev_entity(Svm)).
+    v_has_field(I, ev_entity(Svm)) <==>
+      ~(array_select(alpham(Svm), I) #= none)`
+
+(* The original rule in the paper was not well-typed. *)
+fun entity_axiom8 : bool smt =
+  let I = #i[string] in
+  let Svm = #svm[sv_map] in
+  `forall I, Svm : v_dot(I, ev_entity(Svm)).
+    v_dot(I, ev_entity(Svm)) #= #some_1(array_select(alpham(Svm), I))`
+
+uninterpreted fun v_zero : enc_val smt
+
+fun v_zero_axiom : bool smt =
+  `v_zero #= ev_coll(betab(array_const(int_const(0))))`
+
+uninterpreted fun mem(enc_val smt, enc_val smt) : bool smt
+
+fun mem_axiom : bool smt =
+  let V = #v[enc_val] in
+  let Vb = #vb[v_bag] in
+  `forall V, Vb : mem(V, ev_coll(Vb)), array_select(alphab(Vb), V).
+    mem(V, ev_coll(Vb)) <==> int_gt(array_select(alphab(Vb), V), int_const(0))`
+
+uninterpreted fun v_add_many(enc_val smt, int smt, enc_val smt) : enc_val smt
+uninterpreted fun v_add(enc_val smt, enc_val smt) : enc_val smt
+
+fun v_add_many_axiom : bool smt =
+  let V = #v[enc_val] in
+  let I = #i[int] in
+  let Vb = #vb[v_bag] in
+  `forall V, I, Vb : v_add_many(V, I, ev_coll(Vb)).
+    v_add_many(V, I, ev_coll(Vb)) #=
+      ev_coll(betab(array_store(alphab(Vb), V,
+                                int_add(I, array_select(alphab(Vb), V)))))`
+
+fun v_add_axiom : bool smt =
+  let V = #v[enc_val] in
+  let Vs = #vs[enc_val] in
+  `forall V, Vs : v_add(V, Vs).
+    v_add(V, Vs) #= v_add_many(V, int_const(1), Vs)`
+
+uninterpreted sort closure
+uninterpreted fun accum(closure smt, enc_val smt, enc_val smt) : enc_val smt
+uninterpreted fun apply2(closure smt, enc_val smt, enc_val smt) : enc_val smt
+uninterpreted fun apply(string smt, enc_val list smt) : enc_val smt
+
+fun accum_axiom_nil : bool smt =
+  let Clos = #clos[closure] in
+  let Init = #init[enc_val] in
+  `forall Clos, Init : accum(Clos, v_zero, Init).
+    accum(Clos, v_zero, Init) #= Init`
+
+fun accum_axiom_cons : bool smt =
+  let Clos = #clos[closure] in
+  let Init = #init[enc_val] in
+  let V = #v[enc_val] in
+  let Vs = #vs[enc_val] in
+  let Coll = `v_add(V, Vs)` in
+  `forall Clos, Init, V, Vs : accum(Clos, Coll, Init) .
+    accum(Clos, Coll, Init) #=
+      accum(Clos, Vs, apply2(Clos, V, Init))`
+
+fun encode_env(Env: env) : bool smt =
+  match Env with
+  | [] => `true`
+  | env_cond(E) :: Rest =>
+    let (Phi, A) = encode_exp(E) in
+    let Phi_rest = encode_env(Rest) in
+    `A /\ Phi #= ev_bool(true) /\ Phi_rest`
+  | env_bind(X, T) :: Rest =>
+    let (Phi, A) = encode_type(T, `#{X}[enc_val]`) in
+    let Phi_rest = encode_env(Rest) in
+    `A /\ Phi /\ Phi_rest`
+  end
+
+and encode_type(Ty: typ, V: enc_val smt) : (bool smt * bool smt) =
+  match Ty with
+  | t_any => (`true`, `true`)
+  | t_int => (`#is_ev_int(V)`, `true`)
+  | t_bool => (`#is_ev_bool(V)`, `true`)
+  | t_str => (`#is_ev_str(V)`, `true`)
+  | t_coll(Ty) =>
+    let X = #{(Ty, V)}[enc_val] in
+    let (Phi, A) = encode_type(Ty, `X`) in
+    (`good_c(V) /\ forall X : mem(X, V). mem(X, V) ==> Phi`, A)
+  | t_entity(L, Ty) =>
+    let (Phi, A) = encode_type(Ty, `v_dot(L, V)`) in
+    (`good_e(V) /\ v_has_field(L, V) /\ Phi`, A)
+  | t_refine(X, Ty, E) =>
+    let (Phi1, A1) = encode_type(Ty, V) in
+    let (Phi2, A2) = encode_exp(E) in
+    let A = `A1 /\ A2` in
+    (`Phi1 /\ #let #{X}[enc_val] = V in Phi2 #= ev_bool(true)`, A)
+  end
+
+and encode_exp(E: exp) : (enc_val smt * bool smt) =
+  match E with
+  | e_var(X) => (`#{X}[enc_val]`, `true`)
+  | e_int(C) => (`ev_int(int_const(C))`, `true`)
+  | e_str(S) => (`ev_str(S)`, `true`)
+  | e_bool(C) => (`ev_bool(C)`, `true`)
+  | e_null => (`ev_null`, `true`)
+  | e_binop(B, E1, E2) =>
+    let (V1, A1) = encode_exp(E1) in
+    let (V2, A2) = encode_exp(E2) in
+    (encode_binop(B, V1, V2), `A1 /\ A2`)
+  | e_unop(U, E) =>
+    let (V, A) = encode_exp(E) in
+    (encode_unop(U, V), A)
+  | e_cond(E1, E2, E3) =>
+    let (V1, A1) = encode_exp(E1) in
+    let (V2, A2) = encode_exp(E2) in
+    let (V3, A3) = encode_exp(E3) in
+    let A = `A1 /\ A2 /\ A3` in
+    (`#if V1 #= ev_bool(true) then V2 else V3`, A)
+  | e_let(X, E1, E2) =>
+    let (V1, A1) = encode_exp(E1) in
+    let (V2, A2) = encode_exp(E2) in
+    (`#let #{X}[enc_val] = V1 in V2`, `A1 /\ A2`)
+  | e_type_test(E, Ty) =>
+    let (V, A1) = encode_exp(E) in
+    let (Phi, A2) = encode_type(Ty, V) in
+    (`ev_bool(Phi)`, `A1 /\ A2`)
+  | e_add(E1, E2) =>
+    let (V1, A1) = encode_exp(E1) in
+    let (V2, A2) = encode_exp(E2) in
+    (`v_add(V1, V2)`, `A1 /\ A2`)
+  | e_union(E1, E2) => encode_exp(union2accum(E1, E2))
+  | e_accum(Xv, E1, Yv, E2, E3) =>
+    (* We need to create a canonical form for the closure. *)
+    let New_x = #x[value] in
+    let New_y = #y[value] in
+    let M = [(Xv, e_var(New_x)), (Yv, e_var(New_y))] in
+    let E3 = subst_exp(M, E3) in
+    let (V1, A1) = encode_exp(E1) in
+    let (V2, A2) = encode_exp(E2) in
+    let (V3, A3) = encode_exp(E3) in
+    let X = #{Xv}[enc_val] in
+    let Y = #{Yv}[enc_val] in
+    let Clos = #{E3}[closure] in
+    let Axiom = `forall X, Y : apply2(Clos, X, Y). apply2(Clos, X, Y) #= V3` in
+    (`accum(Clos, V1, V2)`, `Axiom /\ A1 /\ A2 /\ A3`)
+  | e_query(X, E1, E2, E3) => encode_exp(query2accum(X, E1, E2, E3))
+  | e_ascribe(E, _) => encode_exp(E)
+  | e_coll(Vs) =>
+    let (Arr, A) = encode_coll(Vs) in
+    let Vb = #{Arr}[v_bag] in
+    (`ev_coll(Vb)`, `A /\ alphab(Vb) #= Arr`)
+  | e_entity(Elts) =>
+    let (Arr, A) = encode_entity(Elts) in
+    let Svm = #{Arr}[sv_map] in
+    (`ev_entity(Svm)`, `A /\ alpham(Svm) #= Arr`)
+  | e_select(E, L) => let (V, A) = encode_exp(E) in (`v_dot(L, V)`, A)
+  | e_app(F, Es) =>
+    let (Vs, A) = encode_app(Es) in
+    (`apply(F, Vs)`, A)
+  end
+
+and encode_binop(B: binop, V1: enc_val smt, V2: enc_val smt) : enc_val smt =
+  match B with
+  | b_and => `ev_bool(#ev_bool_1(V1) /\ #ev_bool_1(V2))`
+  | b_or => `ev_bool(#ev_bool_1(V1) \/ #ev_bool_1(V2))`
+  | b_eq => `ev_bool(V1 #= V2)`
+  | b_lt => `ev_bool(int_lt(#ev_int_1(V1), #ev_int_1(V2)))`
+  | b_gt => `ev_bool(int_gt(#ev_int_1(V1), #ev_int_1(V2)))`
+  | b_add => `ev_int(int_add(#ev_int_1(V1), #ev_int_1(V2)))`
+  | b_sub => `ev_int(int_sub(#ev_int_1(V1), #ev_int_1(V2)))`
+  | b_mul => `ev_int(int_mul(#ev_int_1(V1), #ev_int_1(V2)))`
+  end
+
+and encode_unop(U: unop, V: enc_val smt) : enc_val smt =
+  match U with
+  | u_not => `ev_bool(~#ev_bool_1(V))`
+  | u_neg => `ev_int(int_neg(#ev_int_1(V)))`
+  end
+
+and encode_coll(Vs: value list) : (v_bag_array smt * bool smt) =
+  match Vs with
+  | [] => (`array_const(int_const(0))`, `true`)
+  | V :: Rest =>
+    let (Ev, A1) = encode_exp(v2e(V)) in
+    let (Arr, A2) = encode_coll(Rest) in
+    let New_arr =
+      `array_store(Arr, Ev, int_add(array_select(Arr, Ev), int_const(1)))` in
+    (New_arr, `A1 /\ A2`)
+  end
+
+and encode_entity(Elts: (string, exp) map) : (sv_map_array smt * bool smt) =
+  match Elts with
+  | [] => (`array_const(none)`, `true`)
+  | (L, E) :: Rest =>
+    let (V, A1) = encode_exp(E) in
+    let (Arr, A2) = encode_entity(Rest) in
+    (`array_store(Arr, L, some(V))`, `A1 /\ A2`)
+  end
+  
+and encode_app(Es: exp list) : (enc_val smt list * bool smt) =
+  match Es with
+  | [] => ([], `true`)
+  | E :: Rest =>
+    let (V, A1) = encode_exp(E) in
+    let (Vs, A2) = encode_app(Rest) in
+    (V :: Vs, `A1 /\ A2`)
+  end
+
+fun type_indicator_func_axioms(Fs: (string * typ) list) : bool smt =
+  match Fs with
+  | [] => `true`
+  | (F, Ty) :: Fs =>
+    let X = #x[enc_val] in
+    let (Phi, A) = encode_type(Ty, `X`) in
+    let U =
+      `forall X : apply(F, [X]).
+        apply(F, [X]) #= ev_bool(true) <==> Phi` in
+    let Tifa = type_indicator_func_axioms(Fs) in
+    `A /\ U /\ Tifa`
+  end
+
+fun axiomization : bool smt =
+  let Tifa = type_indicator_func_axioms(type_indicator_func(??,??)) in
+  `coll_axiom1 /\
+   coll_axiom2 /\
+   coll_axiom3 /\
+   coll_axiom4 /\
+   coll_axiom5 /\
+   entity_axiom1 /\
+   entity_axiom2 /\
+   entity_axiom3 /\
+   entity_axiom4 /\
+   entity_axiom5 /\
+   entity_axiom6 /\
+   entity_axiom7 /\
+   entity_axiom8 /\
+   v_zero_axiom /\
+   mem_axiom /\
+   v_add_many_axiom /\
+   v_add_axiom /\
+   accum_axiom_nil /\
+   accum_axiom_cons /\
+   Tifa`
+
+(*******************************************************************************
+  Termination checking 
+*******************************************************************************)
+
+type change = decr | same
+type edge = (i32 * change)
+type graph = (i32 * edge list) list
+
+fun edge_endpt(E: edge) : i32 = match E with (N, _) => N end
+fun edge_change(E: edge) : change = match E with (_, C) => C end
+
+fun lub_of_changes(C1: change, C2: change) : change =
+  match (C1, C2) with
+  | (decr, _) | (_, decr) => decr
+  | _ => same
+  end
+
+fun add_edge(N: i32, E: edge, G: graph) : graph =
+  match G with
+  | [] => [(N, [E])]
+  | (N2, Es) :: Rest =>
+    if N < N2 then (N, [E]) :: G
+    else if N = N2 then (N, insert(E, Es)) :: Rest
+    else (N2, Es) :: add_edge(N, E, Rest)
+  end
+and insert(E: edge, Es: edge list) : edge list =
+  match Es with
+  | [] => [E]
+  | (N2, C2) :: Rest =>
+    let N = edge_endpt(E) in
+    let C = edge_change(E) in
+    if N < N2 then E :: Es
+    else if N = N2 then (N, lub_of_changes(C, C2)) :: Rest
+    else (N2, C2) :: insert(E, Rest)
+  end
+
+fun empty_graph2(N: i32, I: i32) : graph =
+  if I < N then (I, []) :: empty_graph2(N, I + 1) else []
+fun empty_graph(N: i32) : graph = empty_graph2(N, 0)
+
+fun compose(G1: graph, G2: graph) : graph =
+  compose4(G1, G2, empty_graph(length(G1)))
+and compose4(G: graph, Other: graph, Acc: graph) : graph =
+  match G with
+  | [] => Acc
+  | (N, Es) :: Rest =>
+    let Acc = compose1(N, Es, Other, Acc) in
+    compose4(Rest, Other, Acc)
+  end
+and compose1(N: i32, Es: edge list, Other: graph, Acc: graph) : graph =
+  match Es with
+  | [] => Acc
+  | (N2, C) :: Rest =>
+    let some(Es2) = get(N2, Other) in
+    let Acc = compose2(N, C, Es2, Acc) in
+    compose1(N, Rest, Other, Acc)
+  end
+and compose2(N: i32, C: change, Es: edge list, Acc: graph) : graph =
+  match Es with
+  | [] => Acc
+  | E :: Rest =>
+    let New_edge = compose3(C, E) in
+    compose2(N, C, Rest, add_edge(N, New_edge, Acc))
+  end
+and compose3(C: change, E: edge) : edge =
+  let N = edge_endpt(E) in
+  let C1 = edge_change(E) in
+  (N, lub_of_changes(C, C1))
+
+@bottomup
+output size_change_graph(string, string, graph)
+size_change_graph(F1, F3, G3) :-
+  size_change_graph(F1, F2, G1),
+  size_change_graph(F2, F3, G2),
+  G3 = compose(G1, G2).
+
+fun has_decr_edge(G: graph) : bool =
+  match G with
+  | [] => false
+  | (N, Es) :: Rest => has_decr_edge2(N, Es) || has_decr_edge(Rest)
+  end
+and has_decr_edge2(N: i32, Es: edge list) : bool =
+  match Es with
+  | [] => false
+  | (M, decr) :: Rest => N = M || has_decr_edge2(N, Rest)
+  | _ :: Rest => has_decr_edge2(N, Rest)
+  end
+
+output may_not_terminate(string)
+
+may_not_terminate(F) :-
+  size_change_graph(F, F, G),
+  compose(G, G) = G,
+  !has_decr_edge(G).
+
+@bottomup
+output explore_exp(string, exp, bool smt)
+@bottomup
+output explore_typ(string, typ, enc_val smt, bool smt)
+
+uninterpreted fun size(enc_val smt) : int smt
+
+fun size_axiom1 : bool smt =
+  let X = #x[enc_val] in
+  `forall X : size(X). #is_ev_int(X) ==> size(X) #= int_abs(#ev_int_1(X))`
+
+fun size_axiom2 : bool smt =
+  let E = #e[enc_val] in
+  let X = #x[string] in
+  `forall X, E : v_dot(X, E). int_lt(size(v_dot(X, E)), size(E))`
+
+fun size_axiom3 : bool smt =
+  let X = #x[enc_val] in
+  let Y = #y[enc_val] in
+  `forall X, Y : mem(X, Y). mem(X, Y) ==> int_lt(size(X), size(Y))`
+
+fun encode_params(Params: (var * typ) list) : bool smt =
+  match Params with
+  | [] => `true`
+  | (X, Ty) :: Rest =>
+    let (X, _) = encode_exp(e_var(X)) in
+    let (Phi, A) = encode_type(Ty, X) in
+    let Rest = encode_params(Rest) in
+    `A /\ Phi /\ Rest`
+  end
+
+explore_exp(F, E, Phi) :-
+  labeled_pure(F),
+  func_sig(F, Params, _, E),
+  Phi = encode_params(Params).
+
+explore_exp(F, E, C) :-
+  explore_exp(F, e_type_test(E, _Ty), C).
+
+explore_typ(F, Ty, V, `C /\ A`) :-
+  explore_exp(F, e_type_test(E, Ty), C),
+  (V, A) = encode_exp(E).
+
+explore_exp(F, E1, C) :-
+  explore_exp(F, e_binop(_, E1, _E2), C).
+
+explore_exp(F, E2, C) :-
+  explore_exp(F, e_binop(_, _E1, E2), C).
+
+explore_exp(F, E, C) :-
+  explore_exp(F, e_unop(_, E), C).
+
+explore_exp(F, E1, C) :-
+  explore_exp(F, e_cond(E1, _, _), C).
+
+explore_exp(F, E2, `C /\ A /\ #ev_bool_1(V)`) :-
+  explore_exp(F, e_cond(E1, E2, _), C),
+  encode_exp(E1) = (V, A).
+
+explore_exp(F, E3, `C /\ A /\ ~#ev_bool_1(V)`) :-
+  explore_exp(F, e_cond(E1, _, E3), C),
+  encode_exp(E1) = (V, A).
+
+explore_exp(F, E1, C) :-
+  explore_exp(F, e_let(_X, E1, _), C).
+
+explore_exp(F, E2, `C /\ A1 /\ A2 /\ Xe #= Ee`) :-
+  explore_exp(F, e_let(X, E1, E2), C),
+  encode_exp(e_var(X)) = (Xe, A1),
+  encode_exp(E1) = (Ee, A2).
+
+explore_exp(F, E1, C) :-
+  explore_exp(F, e_add(E1, _E2), C).
+
+explore_exp(F, E2, C) :-
+  explore_exp(F, e_add(_E1, E2), C).
+
+explore_exp(F, E1, C) :-
+  explore_exp(F, e_union(E1, _E2), C).
+
+explore_exp(F, E2, C) :-
+  explore_exp(F, e_union(_E1, E2), C).
+
+explore_exp(F, E1, C) :-
+  explore_exp(F, e_accum(_, E1, _, _E2, _), C).
+
+explore_exp(F, E2, C) :-
+  explore_exp(F, e_accum(_, _E1, _, E2, _), C).
+
+explore_exp(F, query2accum(X, E1, E2, E3), C) :-
+  explore_exp(F, e_query(X, E1, E2, E3), C).
+
+explore_exp(F, E3, `C /\ A1 /\ A2 /\ int_lt(size(Xe), size(Ee))`) :-
+  explore_exp(F, e_accum(X, E1, _, _, E3), C),
+  encode_exp(e_var(X)) = (Xe, A1),
+  encode_exp(E1) = (Ee, A2).
+
+(* XXX Don't think we need to explore the type in the ascription... *)
+explore_exp(F, E, C) :-
+  explore_exp(F, e_ascribe(E, _), C).
+
+@bottomup
+output explore_exps(string, exp list, bool smt)
+explore_exp(F, E, C) :-
+  explore_exps(F, E :: _Rest, C).
+
+explore_exps(F, Rest, C) :-
+  explore_exps(F, _E :: Rest, C).
+
+explore_exps(F, Es, C) :-
+  explore_exp(F, e_entity(Elts), C),
+  (_, Es) = unzip(Elts).
+
+explore_exp(F, E, C) :-
+  explore_exp(F, e_select(E, _), C).
+
+explore_exps(F, Args, C) :-
+  explore_exp(F, e_app(_, Args), C).
+
+fun mk_graph(Fparams: var list, Gparams: exp list, C: bool smt) : graph =
+  let Graph = empty_graph(length(Fparams)) in
+  oloop(Fparams, 0, Gparams, C, Graph)
+and oloop(Fs: var list, Fi: i32, Gs: exp list,
+          C: bool smt, Graph: graph) : graph =
+  match Fs with
+  | [] => Graph
+  | X :: Rest =>
+    let (X, _) = encode_exp(e_var(X)) in
+    let Graph = iloop(X, Fi, Gs, 0, C, Graph) in
+    oloop(Rest, Fi + 1, Gs, C, Graph)
+  end
+and iloop(X: enc_val smt, Xi: i32, Gs: exp list, Gi: i32,
+          C: bool smt, Graph: graph) : graph =
+  match Gs with
+  | [] => Graph
+  | G :: Rest =>
+    let Graph =
+      let C = `axiomization /\ size_axiom1 /\ size_axiom2 /\ size_axiom3 /\ C` in
+      let (V, A) = encode_exp(G) in
+      if is_valid_opt(`C /\ A ==> int_lt(size(V), size(X))`, z3_timeout) = some(true)
+      then add_edge(Xi, (Gi, decr), Graph)
+      else if is_valid_opt(`C /\ A ==> size(V) #= size(X)`, z3_timeout) = some(true)
+      then add_edge(Xi, (Gi, same), Graph)
+      else Graph in
+    iloop(X, Xi, Rest, Gi + 1, C, Graph)
+  end
+
+size_change_graph(F, G, Graph) :-
+  explore_exp(F, e_app(G, Args), C),
+  func_sig(F, Params_and_types, _, _),
+  (Params, _) = unzip(Params_and_types),
+  Graph = mk_graph(Params, Args, C).
+
+explore_typ(F, Ty, `X`, `C /\ mem(X, V)`) :-
+  explore_typ(F, t_coll(Ty), V, C),
+  X = #{(F, Ty, V, C)}[enc_val].
+
+explore_typ(F, Ty, V, C) :-
+  explore_typ(F, t_refine(_, Ty, _), V, C).
+
+explore_exp(F, E, `C /\ size(Y) #= size(V)`) :-
+  explore_typ(F, t_refine(X, _, E), V, C),
+  Y = #{X}[enc_val].
+
+explore_typ(F, Ty, `X`, `C /\ size(X) #= size(v_dot(L, V))`) :-
+  explore_typ(F, t_entity(L, Ty), V, C),
+  X = #{(F, Ty, V, C)}[enc_val].
+
+(*******************************************************************************
+  Refinement purity 
+*******************************************************************************)
+
+fun is_pure(E: exp) : bool =
+  match E with
+  | e_var(_)
+  | e_bool(_)
+  | e_null
+  | e_int(_)
+  | e_str(_)
+  | e_coll(_) => true
+  | e_unop(_, E)
+  | e_ascribe(E, _)
+  | e_select(E, _) => is_pure(E)
+  | e_binop(_, E1, E2)
+  | e_let(_, E1, E2)
+  | e_union(E1, E2)
+  | e_add(E1, E2) => is_pure(E1) && is_pure(E2)
+  | e_cond(E1, E2, E3) => is_pure(E1) && is_pure(E2) && is_pure(E3)
+  | e_type_test(E, Ty) => is_pure(E) && is_pure_type(Ty)
+  | e_entity(Elts) => let (_, Es) = unzip(Elts) in is_pure_exps(Es)
+  | e_app(F, Es) => labeled_pure(F) && is_pure_exps(Es)
+  | e_accum(X, E1, Y, E2, E3) =>
+    is_pure(E1) && is_pure(E2) && is_pure(E3) && is_determ_accum(E3, X, Y)
+  | e_query(X, E1, E2, E3) => is_pure(query2accum(X, E1, E2, E3))
+  end
+and is_determ_accum(E: exp, X: var, Y: var) : bool =
+  let X1 = #{(E, X, Y)}[value] in
+  let X2 = #{(E, X, Y, X1)}[value] in
+  let Y1 = #{(E, X, Y, X1, X2)}[value] in
+  let S1 = [(X, e_var(X1)), (Y, e_var(Y1))] in
+  let E1 = e_let(Y, subst_exp(S1, E), subst_exp1(X, e_var(X2), E)) in
+  let (V1, A1) = encode_exp(E1) in
+  let S2 = [(X, e_var(X2)), (Y, e_var(Y1))] in
+  let E2 = e_let(Y, subst_exp(S2, E), subst_exp1(X, e_var(X1), E)) in
+  let (V2, A2) = encode_exp(E2) in
+  match is_valid_opt(`axiomization /\ A1 /\ A2 ==> V1 #= V2`, z3_timeout) with
+  | none => false
+  | some(B) => B
+  end
+and is_pure_exps(Es: exp list) : bool =
+  match Es with
+  | [] => true
+  | E :: Rest => is_pure(E) && is_pure_exps(Rest)
+  end
+and is_pure_type(Ty: typ) : bool =
+  match Ty with
+  | t_any
+  | t_int
+  | t_str
+  | t_bool => true
+  | t_coll(Ty)
+  | t_entity(_, Ty) => is_pure_type(Ty)
+  | t_refine(_, Ty, E) => is_pure_type(Ty) && is_pure(E)
+  end
+
+(*******************************************************************************
+  Derived types 
+*******************************************************************************)
+
+fun singleton_type(E: exp, T: typ) : typ =
+  if is_pure(E) then
+    let X = #{(E, T)}[value] in
+    t_refine(X, T, e_binop(b_eq, e_var(X), E))
+  else T
+
+fun is_empty(T: typ) : bool =
+	match T with
+	| t_refine(_, _, e_bool(false)) => true
+	| _ => false
+	end.
+
+fun union_type(T: typ, U: typ) : typ =
+	if is_empty(T) then U
+	else if is_empty(U) then T
+	else
+		let X = #{[T, U]}[value] in
+		let E1 = e_type_test(e_var(X), T) in
+		let E2 = e_type_test(e_var(X), U) in
+		t_refine(X, t_any, e_binop(b_or, E1, E2))
+
+fun intersection_type(T: typ, U: typ) : typ =
+  let X = #{[T, U]}[value] in
+  let E1 = e_type_test(e_var(X), T) in
+  let E2 = e_type_test(e_var(X), U) in
+  t_refine(X, t_any, e_binop(b_and, E1, E2))
+
+fun empty_type : typ = t_refine(#empty[value], t_any, e_bool(false))
+
+fun conditional_type(E: exp, T: typ, U: typ) : typ =
+  if is_pure(E) then
+    let X = #{[T, U]}[value] in
+    let T1 = t_refine(X, T, E) in
+    let T2 = t_refine(X, U, e_unop(u_not, E)) in
+    union_type(T1, T2)
+  else union_type(T, U)
+
+fun not_type(T: typ) : typ =
+  let X = #{T}[value] in
+  t_refine(X, t_any, e_unop(u_not, e_type_test(e_var(X), T)))
+
+fun all_type(X: var, T: typ, E: exp) : typ =
+  let _ = assert(is_pure(E), (E, "is not pure")) in
+  t_coll(t_refine(X, T, E))
+
+fun exists_type(X: var, T: typ, E: exp) : typ =
+  intersection_type(t_coll(T), not_type(all_type(X, T, e_unop(u_not, E)))) 
+
+(*******************************************************************************
+  Type normalization
+*******************************************************************************)
+
+(*
+  A tuple `(x, [a_0, ..., a_n], e)` represents the type
+  `x : (a_0 & ... & a_n) where e`
+*) 
+type r_typ = (var * typ list * exp)
+
+(* Compose together two r_typ's *)
+fun conj_rr(R1: r_typ, R2: r_typ) : r_typ =
+  let Y = #{(R1, R2)}[value] in
+  let (X1, C1, E1) = R1 in
+  let (X2, C2, E2) = R2 in
+  let New_c = append(C1, C2) in
+  let New_e1 = subst_exp1(X1, e_var(Y), E1) in
+  let New_e2 = subst_exp1(X2, e_var(Y), E2) in
+  (Y, New_c, e_binop(b_and, New_e1, New_e2))
+
+fun conj_rd(R: r_typ, Rs: r_typ list) : r_typ list =
+  match Rs with
+  | [] => []
+  | R2 :: Rs => conj_rr(R, R2) :: conj_rd(R, Rs)
+  end
+
+fun conj_dd(Rs: r_typ list, D: r_typ list) : r_typ list =
+  match Rs with
+  | [] => []
+  | R :: Rs => append(conj_rd(R, D), conj_dd(Rs, D))
+  end
+
+fun filter_any(Ts: typ list) : typ list =
+  match Ts with
+  | [] => []
+  | t_any :: Ts => filter_any(Ts)
+  | T :: Ts => T :: filter_any(Ts)
+  end
+
+fun intersect_types_helper(Ts: typ list) : typ =
+  match Ts with
+  | [] => t_any
+  | [T] => T
+  | T :: Ts => intersection_type(T, intersect_types_helper(Ts))
+  end
+
+fun intersect_types(Ts: typ list) : typ = intersect_types_helper(filter_any(Ts))
+
+fun norm(T: typ) : r_typ list =
+  match T with
+  | t_any
+  | t_int
+  | t_str
+  | t_bool
+  | t_coll(_)
+  | t_entity(_, _) => [(#norm[value], [T], e_bool(true))]
+  | t_refine(X, T, E) => norm_helper(X, E, norm(T))
+  end
+and norm_helper(X: var, E: exp, Rs: r_typ list) : r_typ list =
+  match Rs with
+  | [] => []
+  | R :: Rs =>
+    (* This differs from what's in the paper. *)
+    append(conj_rd(R, norm_r(X, [], E)), norm_helper(X, E, Rs))
+  end
+and norm_r(X: var, C: typ list, E: exp) : r_typ list =
+  match E with
+  | e_type_test(e_var(Y), T) =>
+    if X = Y && !is_free_in_type(X, T)
+    then norm(intersect_types(T :: C))
+    else [(X, C, E)]
+  | e_binop(b_or, E1, E2) => append(norm_r(X, C, E1), norm_r(X, C, E2))
+  | e_binop(b_and, E1, E2) => conj_dd(norm_r(X, C, E1), norm_r(X, C, E2))
+  | _ => [(X, C, E)]
+  end
+
+(*******************************************************************************
+  Type checking 
+*******************************************************************************)
+
+@topdown
+output synth(env, exp, typ)
+@topdown
+output check(env, exp, typ)
+@topdown
+output env_wf(env)
+@topdown
+output type_wf(env, typ)
+@topdown
+output subtype(env, typ, typ)
+
+env_wf([]).
+env_wf(env_bind(X, T) :: Env) :-
+  type_wf(Env, T), true,
+  lookup(X, Env) = none.
+
+env_wf(env_cond(_E) :: Env) :-
+  env_wf(Env).
+
+type_wf(Env, t_any) :-
+  env_wf(Env).
+type_wf(Env, t_int) :-
+  env_wf(Env).
+type_wf(Env, t_str) :-
+  env_wf(Env).
+type_wf(Env, t_bool) :-
+  env_wf(Env).
+type_wf(Env, t_coll(T)) :-
+  type_wf(Env, T).
+type_wf(Env, t_entity(_, T)) :-
+  type_wf(Env, T).
+
+type_wf(Env, t_refine(X, T, E)) :-
+  check(env_bind(X, T) :: Env, E, t_bool),
+  is_pure(E).
+
+synth(Env, E, singleton_type(E, T)) :-
+  E = e_var(X),
+  env_wf(Env),
+  lookup(X, Env) = some(T).
+
+synth(Env, E, singleton_type(E, t_int)) :-
+  E = e_int(_),
+  env_wf(Env).
+
+synth(Env, E, singleton_type(E, t_str)) :-
+  E = e_str(_),
+  env_wf(Env).
+
+synth(Env, E, singleton_type(E, t_bool)) :-
+  E = e_bool(_),
+  env_wf(Env).
+
+synth(Env, E, singleton_type(E, t_any)) :-
+  E = e_null,
+  env_wf(Env).
+
+@topdown
+output synth_list_helper(env, value list, typ)
+synth_list_helper(_Env, [], empty_type).
+synth_list_helper(Env, V :: Vrest, union_type(T, Trest)) :-
+  synth(Env, v2e(V), T),
+  synth_list_helper(Env, Vrest, Trest).
+  
+synth(Env, e_coll(Vs), t_coll(T)) :-
+  env_wf(Env),
+  synth_list_helper(Env, Vs, T).
+
+fun typeof_binop(B: binop) : (typ * typ * typ) =
+  match B with
+  | b_add | b_sub | b_mul => (t_int, t_int, t_int)
+  | b_and | b_or => (t_bool, t_bool, t_bool)
+  | b_eq => (t_any, t_any, t_bool)
+  | b_lt | b_gt => (t_int, t_int, t_bool)
+  end
+
+synth(Env, E, singleton_type(E, T)) :-
+  E = e_binop(B, E1, E2),
+  typeof_binop(B) = (T1, T2, T),
+  check(Env, E1, T1),
+  check(Env, E2, T2).
+
+fun typeof_unop(U: unop) : (typ * typ) =
+  match U with
+  | u_not => (t_bool, t_bool)
+  | u_neg => (t_int, t_int)
+  end
+
+synth(Env, E, singleton_type(E, T)) :-
+  E = e_unop(U, E1),
+  typeof_unop(U) = (T1, T),
+  check(Env, E1, T1).
+
+synth(Env, E, conditional_type(E1, T2, T3)) :-
+  E = e_cond(E1, E2, E3),
+  check(Env, E1, t_bool),
+  synth(env_cond(E1) :: Env, E2, T2),
+  synth(env_cond(e_unop(u_not, E1)) :: Env, E3, T3).
+
+synth(Env, E, T) :-
+  E = e_let(X, E1, E2),
+  synth(Env, E1, T1),
+  synth(env_bind(X, T1) :: Env, E2, T2),
+  T = subst_typ1(X, E1, T2),
+  type_wf(Env, T).
+
+synth(Env, E, singleton_type(E, t_bool)) :-
+  E = e_type_test(E1, T),
+  check(Env, E1, t_any),
+  type_wf(Env, T).
+
+fun type_of_item(T: typ) : typ list =
+  match T with
+  | t_coll(Item_typ) => [Item_typ]
+  | _ => []
+  end
+
+fun types_of_item(Ts: typ list) : typ list =
+  match Ts with
+  | [] => []
+  | T :: Ts => append(type_of_item(T), types_of_item(Ts))
+  end
+
+fun items_conj(Ts: typ list) : typ option =
+  match types_of_item(Ts) with
+  | [] => none
+  | Xs => some(intersect_types(Xs))
+  end
+
+fun items(Env: env, Rs: r_typ list) : typ option =
+  match Rs with
+  | [] => some(empty_type)
+  | (X, C, E) :: Rs =>
+    match items_conj(C) with
+    | some(T) =>
+      match items(Env, Rs) with
+      | none => none
+      | some(U) => some(union_type(T, U))
+      end
+    | none =>
+      (*
+        Added this case: check to see whether the current disjunct is even
+        inhabitable by the collection under scrutinee given the current
+        environment. Unions example doesn't work without this.
+      *)
+      let Phi1 = encode_env(Env) in
+      let (Phi2, A1) = encode_type(intersect_types(C), `#{X}[enc_val]`) in
+      let (V, A2) = encode_exp(E) in
+      let Formula = `A1 /\ A2 /\ Phi1 /\ Phi2 ==> V #= ev_bool(false)` in
+      if is_valid_opt(Formula, z3_timeout) = some(true)
+      then items(Env, Rs)
+      else none
+    end
+  end
+
+synth(Env, e_add(E1, E2), T) :-
+  synth(Env, E1, T1),
+  synth(Env, E2, T2),
+  items(Env, norm(T2)) = some(U),
+  t_coll(union_type(singleton_type(E1, T1), U)) = T.
+
+synth(Env, E, singleton_type(E, U)) :-
+  E = e_union(E1, E2),
+  synth(Env, E1, T1),
+  items(Env, norm(T1)) = some(U1),
+  synth(Env, E2, T2),
+  items(Env, norm(T2)) = some(U2),
+  U = t_coll(union_type(U1, U2)). 
+
+synth(Env, e_accum(X, E1, Y, E2, E3), T2) :-
+  synth(Env, E1, T1),
+  items(Env, norm(T1)) = some(U1),
+  (* Rename the variables in refinements... this is slow *)
+  Dummy = #{(Env, X, Y)}[value],
+  Clean = subst_typ1(Dummy, e_var(Dummy), U1),
+  synth(Env, E2, T2),
+  check(env_bind(Y, T2) :: env_bind(X, Clean) :: Env, E3, T2).
+
+fun query2bind(Where: exp, Select: exp) : exp =
+  e_cond(Where, e_add(Select, e_coll([])), e_coll([]))
+
+(*
+  These two query cases should be mutally exclusive, but we cannot encode that
+  easily.
+*)
+synth(Env, e_query(X, E1, E2, E3), t_coll(U2)) :-
+  synth(Env, E1, T1),
+  items(Env, norm(T1)) = some(U1),
+  Bind_body = query2bind(E2, E3),
+  synth(env_bind(X, U1) :: Env, Bind_body, T2),
+  items(Env, norm(T2)) = some(U2),
+  type_wf(Env, U2).
+
+synth(Env, e_query(X, E1, E2, E3), t_coll(T)) :-
+  synth(Env, E1, T1),
+  items(Env, norm(T1)) = some(U1),
+  Bind_body = query2bind(E2, E3),
+  synth(env_bind(X, U1) :: Env, Bind_body, T2),
+  items(Env, norm(T2)) = some(U2),
+  Y = #{(Env, X, U1, U2)}[value],
+  Exists_type = exists_type(X, U1, e_type_test(e_var(Y), U2)),
+  T = t_refine(Y, t_any, e_type_test(E1, Exists_type)). 
+
+synth(Env, e_ascribe(E, T), T) :-
+  check(Env, E, T).
+
+@topdown
+output synth_entity_helper(env, (string, exp) map, typ)
+synth_entity_helper(_, [], t_any).
+synth_entity_helper(Env, (L, E) :: Rest, intersection_type(T, Trest)) :-
+  synth(Env, E, Te),
+  T = t_entity(L, Te),
+  synth_entity_helper(Env, Rest, Trest).
+
+synth(Env, e_entity(Elts), T) :-
+  synth_entity_helper(Env, Elts, T),
+  env_wf(Env).
+
+fun type_of_field(T: typ, L: string) : typ list =
+  match T with
+  | t_entity(Y, T) => if Y = L then [T] else []
+  | _ => []
+  end
+
+fun types_of_field(Ts: typ list, L: string) : typ list =
+  match Ts with
+  | [] => []
+  | T :: Ts => append(type_of_field(T, L), types_of_field(Ts, L))
+  end
+
+fun fields_conj(Ts: typ list, L: string) : typ option =
+  match types_of_field(Ts, L) with
+  | [] => none
+  | Xs => some(intersect_types(Xs))
+  end
+
+fun fields(Env: env, Rs: r_typ list, L: string) : typ option =
+  match Rs with
+  | [] => some(empty_type)
+  | (X, C, E) :: Rs =>
+    match fields_conj(C, L) with
+    | some(T) =>
+      match fields(Env, Rs, L) with
+      | none => none
+      | some(U) => some(union_type(T, U))
+      end
+    | none =>
+      (*
+        Added this case: check to see whether the current disjunct is even
+        inhabitable by the entity under scrutinee given the current environment.
+        Unions example doesn't work without this.
+      *)
+      let Phi1 = encode_env(Env) in
+      let (Phi2, A1) = encode_type(intersect_types(C), `#{X}[enc_val]`) in
+      let (V, A2) = encode_exp(E) in
+      let Formula = `A1 /\ A2 /\ Phi1 /\ Phi2 ==> V #= ev_bool(false)` in
+      if is_valid_opt(Formula, z3_timeout) = some(true)
+      then fields(Env, Rs, L)
+      else none
+    end
+  end
+
+synth(Env, Select, singleton_type(Select, U)) :-
+  Select = e_select(E, L),
+  synth(Env, E, T),
+  D = norm(T),
+  fields(Env, D, L) = some(U).
+
+@topdown
+output synth_app_helper(env, var list, exp list, typ list, subst, subst)
+synth_app_helper(_, [], [], [], Subst, Subst).
+synth_app_helper(Env, X :: Xs, E :: Es, T :: Ts, Sin, Sout) :-
+  T2 = subst_typ(Sin, T),
+  type_wf(Env, T2),
+  check(Env, E, T2),
+  synth_app_helper(Env, Xs, Es, Ts, (X, E) :: Sin, Sout).
+
+synth(Env, e_app(F, Es), U2) :-
+  func_sig(F, Sig, U, _),
+  (Params, Typs) = unzip(Sig),
+  synth_app_helper(Env, Params, Es, Typs, [], Subst),
+  U2 = subst_typ(Subst, U),
+  type_wf(Env, U2).
+
+fun is_special(E: exp) : bool =
+  match E with
+  | e_select(_, _)
+  | e_cond(_, _, _)
+  | e_let(_, _, _) => true
+  | _ => false
+  end
+
+check(Env, E, U) :-
+  !is_special(E),
+  synth(Env, E, T),
+  subtype(Env, singleton_type(E, T), U).
+
+check(Env, E, T) :-
+  E = e_cond(E1, E2, E3),
+  check(Env, E1, t_bool),
+  check(env_cond(E1) :: Env, E2, T),
+  check(env_cond(e_unop(u_not, E1)) :: Env, E3, T).
+
+check(Env, E, U) :-
+  E = e_let(X, E1, E2),
+  !is_free_in_type(X, U),
+  synth(Env, E1, T),
+  check(env_bind(X, T) :: Env, E2, U).
+
+check(Env, e_select(E, L), T) :-
+  check(Env, E, t_entity(L, T)).
+
+subtype(Env, T, T1) :-
+  type_wf(Env, T1),
+  encode_env(Env) = Phi1,
+  X = `#{(Env, T, T1)}[enc_val]`,
+  encode_type(T, X) = (Phi2, Axioms1),
+  encode_type(T1, X) = (Phi3, Axioms2),
+  Axioms = `axiomization /\ Axioms1 /\ Axioms2`,
+  is_valid_opt(`Axioms /\ Phi1 /\ Phi2 ==> Phi3`, z3_timeout) = some(true).
+
+(*******************************************************************************
+  Program checking
+*******************************************************************************)
+
+output prog_ok
+
+output func_not_ok(string)
+
+output type_not_ok(string)
+
+fun mk_env(Xs: (var * typ) list) : env =
+  match Xs with
+  | [] => []
+  | (X, Ty) :: Rest => env_bind(X, Ty) :: mk_env(Rest)
+  end
+
+func_not_ok(F) :-
+  func_sig(F, Params_and_types, Ty, E),
+  Env = mk_env(Params_and_types),
+  !check(Env, E, Ty).
+
+func_not_ok(F) :-
+  labeled_pure(F),
+  func_sig(F, _, _, E),
+  !is_pure(E).
+
+func_not_ok(F) :-
+  labeled_pure(F),
+  may_not_terminate(F).
+
+type_not_ok(Name) :-
+  type_alias(Name, T),
+  !type_wf([], T).
+
+prog_ok :-
+  !func_not_ok(_),
+  !type_not_ok(_).

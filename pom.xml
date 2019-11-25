@@ -54,7 +54,7 @@
 				<configuration>
 					<archive>
 						<manifest>
-							<mainClass>edu.harvard.seas.pl.dminor_to_formulog.Main</mainClass>
+							<mainClass>edu.harvard.seas.pl.dminor_in_formulog.Main</mainClass>
 						</manifest>
 					</archive>
 					<descriptorRefs>
@@ -78,7 +78,7 @@
 				<configuration>
 					<inceptionYear>2018</inceptionYear>
 					<organizationName>President and Fellows of Harvard College</organizationName>
-					<projectName>FormuLog</projectName>
+					<projectName>Formulog</projectName>
 					<licenseName>apache_v2</licenseName>
 					<roots>
 						<root>src/main/java</root>

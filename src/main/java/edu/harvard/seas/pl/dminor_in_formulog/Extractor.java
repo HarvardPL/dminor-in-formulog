@@ -1,4 +1,24 @@
-package edu.harvard.seas.pl.dminor_to_formulog;
+package edu.harvard.seas.pl.dminor_in_formulog;
+
+/*-
+ * #%L
+ * Formulog
+ * %%
+ * Copyright (C) 2018 - 2019 President and Fellows of Harvard College
+ * %%
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ * 
+ *      http://www.apache.org/licenses/LICENSE-2.0
+ * 
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ * #L%
+ */
 
 import java.io.IOException;
 import java.io.Reader;
@@ -17,36 +37,39 @@ import org.antlr.v4.runtime.CharStreams;
 import org.antlr.v4.runtime.CommonTokenStream;
 import org.antlr.v4.runtime.misc.Pair;
 
-import edu.harvard.seas.pl.dminor_to_formulog.DminorParser.AccumExprContext;
-import edu.harvard.seas.pl.dminor_to_formulog.DminorParser.ArgsContext;
-import edu.harvard.seas.pl.dminor_to_formulog.DminorParser.AscribeExprContext;
-import edu.harvard.seas.pl.dminor_to_formulog.DminorParser.BinopExprContext;
-import edu.harvard.seas.pl.dminor_to_formulog.DminorParser.CallExprContext;
-import edu.harvard.seas.pl.dminor_to_formulog.DminorParser.CollExprContext;
-import edu.harvard.seas.pl.dminor_to_formulog.DminorParser.CollTypeContext;
-import edu.harvard.seas.pl.dminor_to_formulog.DminorParser.CondExprContext;
-import edu.harvard.seas.pl.dminor_to_formulog.DminorParser.ExprContext;
-import edu.harvard.seas.pl.dminor_to_formulog.DminorParser.FromSelectExprContext;
-import edu.harvard.seas.pl.dminor_to_formulog.DminorParser.FromWhereSelectExprContext;
-import edu.harvard.seas.pl.dminor_to_formulog.DminorParser.FuncDefContext;
-import edu.harvard.seas.pl.dminor_to_formulog.DminorParser.LetExprContext;
-import edu.harvard.seas.pl.dminor_to_formulog.DminorParser.ModuleContext;
-import edu.harvard.seas.pl.dminor_to_formulog.DminorParser.NamedTypeContext;
-import edu.harvard.seas.pl.dminor_to_formulog.DminorParser.NumExprContext;
-import edu.harvard.seas.pl.dminor_to_formulog.DminorParser.ParamContext;
-import edu.harvard.seas.pl.dminor_to_formulog.DminorParser.ParenExprContext;
-import edu.harvard.seas.pl.dminor_to_formulog.DminorParser.RecordDefEntryContext;
-import edu.harvard.seas.pl.dminor_to_formulog.DminorParser.RecordEntryContext;
-import edu.harvard.seas.pl.dminor_to_formulog.DminorParser.RecordGetExprContext;
-import edu.harvard.seas.pl.dminor_to_formulog.DminorParser.RecordMakeExprContext;
-import edu.harvard.seas.pl.dminor_to_formulog.DminorParser.RecordTypeContext;
-import edu.harvard.seas.pl.dminor_to_formulog.DminorParser.RefinementTypeContext;
-import edu.harvard.seas.pl.dminor_to_formulog.DminorParser.SingletonTypeContext;
-import edu.harvard.seas.pl.dminor_to_formulog.DminorParser.StrExprContext;
-import edu.harvard.seas.pl.dminor_to_formulog.DminorParser.TypeDefContext;
-import edu.harvard.seas.pl.dminor_to_formulog.DminorParser.UnionTypeContext;
-import edu.harvard.seas.pl.dminor_to_formulog.DminorParser.UnopExprContext;
-import edu.harvard.seas.pl.dminor_to_formulog.DminorParser.VarExprContext;
+import edu.harvard.seas.pl.dminor_in_formulog.DminorBaseVisitor;
+import edu.harvard.seas.pl.dminor_in_formulog.DminorLexer;
+import edu.harvard.seas.pl.dminor_in_formulog.DminorParser;
+import edu.harvard.seas.pl.dminor_in_formulog.DminorParser.AccumExprContext;
+import edu.harvard.seas.pl.dminor_in_formulog.DminorParser.ArgsContext;
+import edu.harvard.seas.pl.dminor_in_formulog.DminorParser.AscribeExprContext;
+import edu.harvard.seas.pl.dminor_in_formulog.DminorParser.BinopExprContext;
+import edu.harvard.seas.pl.dminor_in_formulog.DminorParser.CallExprContext;
+import edu.harvard.seas.pl.dminor_in_formulog.DminorParser.CollExprContext;
+import edu.harvard.seas.pl.dminor_in_formulog.DminorParser.CollTypeContext;
+import edu.harvard.seas.pl.dminor_in_formulog.DminorParser.CondExprContext;
+import edu.harvard.seas.pl.dminor_in_formulog.DminorParser.ExprContext;
+import edu.harvard.seas.pl.dminor_in_formulog.DminorParser.FromSelectExprContext;
+import edu.harvard.seas.pl.dminor_in_formulog.DminorParser.FromWhereSelectExprContext;
+import edu.harvard.seas.pl.dminor_in_formulog.DminorParser.FuncDefContext;
+import edu.harvard.seas.pl.dminor_in_formulog.DminorParser.LetExprContext;
+import edu.harvard.seas.pl.dminor_in_formulog.DminorParser.ModuleContext;
+import edu.harvard.seas.pl.dminor_in_formulog.DminorParser.NamedTypeContext;
+import edu.harvard.seas.pl.dminor_in_formulog.DminorParser.NumExprContext;
+import edu.harvard.seas.pl.dminor_in_formulog.DminorParser.ParamContext;
+import edu.harvard.seas.pl.dminor_in_formulog.DminorParser.ParenExprContext;
+import edu.harvard.seas.pl.dminor_in_formulog.DminorParser.RecordDefEntryContext;
+import edu.harvard.seas.pl.dminor_in_formulog.DminorParser.RecordEntryContext;
+import edu.harvard.seas.pl.dminor_in_formulog.DminorParser.RecordGetExprContext;
+import edu.harvard.seas.pl.dminor_in_formulog.DminorParser.RecordMakeExprContext;
+import edu.harvard.seas.pl.dminor_in_formulog.DminorParser.RecordTypeContext;
+import edu.harvard.seas.pl.dminor_in_formulog.DminorParser.RefinementTypeContext;
+import edu.harvard.seas.pl.dminor_in_formulog.DminorParser.SingletonTypeContext;
+import edu.harvard.seas.pl.dminor_in_formulog.DminorParser.StrExprContext;
+import edu.harvard.seas.pl.dminor_in_formulog.DminorParser.TypeDefContext;
+import edu.harvard.seas.pl.dminor_in_formulog.DminorParser.UnionTypeContext;
+import edu.harvard.seas.pl.dminor_in_formulog.DminorParser.UnopExprContext;
+import edu.harvard.seas.pl.dminor_in_formulog.DminorParser.VarExprContext;
 
 public final class Extractor {
 
