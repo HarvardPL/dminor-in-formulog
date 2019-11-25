@@ -60,13 +60,12 @@ fun unzip(Xs: ('a * 'b) list) : ('a list * 'b list) =
   | (A, B) :: Rest => let (As, Bs) = unzip(Rest) in (A :: As, B :: Bs)
   end
 
-fun fail(_Msg: 'a) : bool =
+fun fail(Msg: 'a) : 'b =
   match true with
-  | false => true
+  | false => fail(Msg)
   end
 
-fun assert(Cond: bool, Msg: 'a) : bool =
-  if Cond then true else fail(Msg)
+fun assert(Cond: bool, Msg: 'a) : bool = Cond || fail(Msg)
 
 fun z3_timeout : i32 option = some(100)
 
