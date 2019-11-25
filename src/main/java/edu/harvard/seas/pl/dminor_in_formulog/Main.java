@@ -31,13 +31,16 @@ import java.util.List;
 import java.util.Map;
 
 public class Main {
-	
+
 	public static void main(String[] args) throws FileNotFoundException, IOException {
+		if (args.length != 1) {
+			throw new IllegalArgumentException("Expected a single argument (the Dminor file to process).");
+		}
 		String file = args[0];
 		Module mod = Extractor.extract(new FileReader(file));
 		Map<String, List<String[]>> db = Relationizer.relationize(mod);
 		Path outdir = Paths.get(file + "_facts");
-		Files.createDirectories(outdir);	
+		Files.createDirectories(outdir);
 		for (Map.Entry<String, List<String[]>> e : db.entrySet()) {
 			Path out = outdir.resolve(e.getKey() + ".csv");
 			try (BufferedWriter writer = Files.newBufferedWriter(out)) {
