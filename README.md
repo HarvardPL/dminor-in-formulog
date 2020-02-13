@@ -7,7 +7,7 @@ facts that can be used as input for the type checker.
 
 ## Dependencies
 
-* [Formulog](https://github.com/HarvardPL/formulog)
+* [Formulog](https://github.com/HarvardPL/formulog) (v0.3.\_)
 
 To build the fact-extractor tool from source, you will also need:
 

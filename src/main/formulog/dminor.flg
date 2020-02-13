@@ -127,6 +127,11 @@ and typ =
   | t_entity(string, typ)
 
 fun v2e(V: value) : exp =
+  let fun vs2es(Vs: value list) : exp list =
+    match Vs with
+    | [] => []
+    | V :: Rest => v2e(V) :: vs2es(Rest)
+    end in
   match V with
   | v_null => e_null
   | v_str(S) => e_str(S)
@@ -136,11 +141,6 @@ fun v2e(V: value) : exp =
   | v_entity(Elts) =>
     let (Ls, Vs) = unzip(Elts) in
     e_entity(zip(Ls, vs2es(Vs)))
-  end
-and vs2es(Vs: value list) : exp list =
-  match Vs with
-  | [] => []
-  | V :: Rest => v2e(V) :: vs2es(Rest)
   end
 
 fun query2accum(X: var, E1: exp, E2: exp, E3: exp) : exp =
@@ -169,6 +169,16 @@ input type_indicator_func(string, typ)
 type subst = (var, exp) map
 
 fun subst_exp(M: subst, E: exp) : exp =
+  let fun subst_entity(M: subst, Elts: (string, exp) map) : (string, exp) map =
+    match Elts with
+    | [] => []
+    | (L, E) :: Rest  => (L, subst_exp(M, E)) :: subst_entity(M, Rest)
+    end in
+  let fun subst_exps(M: subst, Es: exp list) : exp list =
+    match Es with
+    | [] => []
+    | E :: Rest => subst_exp(M, E) :: subst_exps(M, Rest)
+    end in
   match E with
   | e_var(X) =>
     match get(X, M) with
@@ -210,16 +220,6 @@ fun subst_exp(M: subst, E: exp) : exp =
   | e_select(E, L) => e_select(subst_exp(M, E), L)
   | e_app(F, Es) => e_app(F, subst_exps(M, Es))
   end
-and subst_entity(M: subst, Elts: (string, exp) map) : (string, exp) map =
-  match Elts with
-  | [] => []
-  | (L, E) :: Rest  => (L, subst_exp(M, E)) :: subst_entity(M, Rest)
-  end
-and subst_exps(M: subst, Es: exp list) : exp list =
-  match Es with
-  | [] => []
-  | E :: Rest => subst_exp(M, E) :: subst_exps(M, Rest)
-  end
 and subst_typ(M: subst, T: typ) : typ =
   match T with
   | t_refine(X, T, E) =>
@@ -241,6 +241,11 @@ fun subst_typ1(X: var, V: exp, T: typ) : typ = subst_typ([(X, V)], T)
 *******************************************************************************)
 
 fun is_free_in_exp(X: var, E: exp) : bool =
+  let fun is_free_in_exps(Es: exp list) : bool =
+    match Es with
+    | [] => false
+    | E :: Es => is_free_in_exp(X, E) || is_free_in_exps(Es)
+    end in
   match E with
   | e_var(Y) => X = Y
   | e_null | e_int(_) | e_bool(_) | e_str(_) | e_coll(_) => false
@@ -261,13 +266,8 @@ fun is_free_in_exp(X: var, E: exp) : bool =
   | e_query(Y, E1, E2, E3) =>
     is_free_in_exp(X, E1) ||
       (X != Y && (is_free_in_exp(X, E2) || is_free_in_exp(X, E3)))
-  | e_entity(Elts) => let (_, Es) = unzip(Elts) in is_free_in_exps(X, Es)
-  | e_app(_, Es) => is_free_in_exps(X, Es)
-  end
-and is_free_in_exps(X: var, Es: exp list) : bool =
-  match Es with
-  | [] => false
-  | E :: Es => is_free_in_exp(X, E) || is_free_in_exps(X, Es)
+  | e_entity(Elts) => let (_, Es) = unzip(Elts) in is_free_in_exps(Es)
+  | e_app(_, Es) => is_free_in_exps(Es)
   end
 and is_free_in_type(X: var, Ty: typ) : bool =
   match Ty with
@@ -358,7 +358,6 @@ uninterpreted fun v_eupdate(string smt, enc_val smt, enc_val smt) : enc_val smt
 uninterpreted fun v_has_field(string smt, enc_val smt) : bool smt
 uninterpreted fun v_dot(string smt, enc_val smt) : enc_val smt
 
-(* XXX Maybe need patterns? *)
 fun entity_axiom1 : bool smt =
   let Am = #am[sv_map_array] in
   `forall Am. finite_e(Am) ==> alpham(betam(Am)) #= Am`
@@ -487,6 +486,54 @@ and encode_type(Ty: typ, V: enc_val smt) : (bool smt * bool smt) =
   end
 
 and encode_exp(E: exp) : (enc_val smt * bool smt) =
+
+  let fun encode_binop(B: binop, V1: enc_val smt, V2: enc_val smt) : enc_val smt =
+    match B with
+    | b_and => `ev_bool(#ev_bool_1(V1) /\ #ev_bool_1(V2))`
+    | b_or => `ev_bool(#ev_bool_1(V1) \/ #ev_bool_1(V2))`
+    | b_eq => `ev_bool(V1 #= V2)`
+    | b_lt => `ev_bool(int_lt(#ev_int_1(V1), #ev_int_1(V2)))`
+    | b_gt => `ev_bool(int_gt(#ev_int_1(V1), #ev_int_1(V2)))`
+    | b_add => `ev_int(int_add(#ev_int_1(V1), #ev_int_1(V2)))`
+    | b_sub => `ev_int(int_sub(#ev_int_1(V1), #ev_int_1(V2)))`
+    | b_mul => `ev_int(int_mul(#ev_int_1(V1), #ev_int_1(V2)))`
+    end in
+
+  let fun encode_unop(U: unop, V: enc_val smt) : enc_val smt =
+    match U with
+    | u_not => `ev_bool(~#ev_bool_1(V))`
+    | u_neg => `ev_int(int_neg(#ev_int_1(V)))`
+    end in
+
+  let fun encode_coll(Vs: value list) : (v_bag_array smt * bool smt) =
+    match Vs with
+    | [] => (`array_const(int_const(0))`, `true`)
+    | V :: Rest =>
+      let (Ev, A1) = encode_exp(v2e(V)) in
+      let (Arr, A2) = encode_coll(Rest) in
+      let New_arr =
+        `array_store(Arr, Ev, int_add(array_select(Arr, Ev), int_const(1)))` in
+      (New_arr, `A1 /\ A2`)
+    end in
+
+  let fun encode_entity(Elts: (string, exp) map) : (sv_map_array smt * bool smt) =
+    match Elts with
+    | [] => (`array_const(none)`, `true`)
+    | (L, E) :: Rest =>
+      let (V, A1) = encode_exp(E) in
+      let (Arr, A2) = encode_entity(Rest) in
+      (`array_store(Arr, L, some(V))`, `A1 /\ A2`)
+    end in
+
+  let fun encode_app(Es: exp list) : (enc_val smt list * bool smt) =
+    match Es with
+    | [] => ([], `true`)
+    | E :: Rest =>
+      let (V, A1) = encode_exp(E) in
+      let (Vs, A2) = encode_app(Rest) in
+      (V :: Vs, `A1 /\ A2`)
+    end in
+
   match E with
   | e_var(X) => (`#{X}[enc_val]`, `true`)
   | e_int(C) => (`ev_int(int_const(C))`, `true`)
@@ -549,53 +596,6 @@ and encode_exp(E: exp) : (enc_val smt * bool smt) =
     (`apply(F, Vs)`, A)
   end
 
-and encode_binop(B: binop, V1: enc_val smt, V2: enc_val smt) : enc_val smt =
-  match B with
-  | b_and => `ev_bool(#ev_bool_1(V1) /\ #ev_bool_1(V2))`
-  | b_or => `ev_bool(#ev_bool_1(V1) \/ #ev_bool_1(V2))`
-  | b_eq => `ev_bool(V1 #= V2)`
-  | b_lt => `ev_bool(int_lt(#ev_int_1(V1), #ev_int_1(V2)))`
-  | b_gt => `ev_bool(int_gt(#ev_int_1(V1), #ev_int_1(V2)))`
-  | b_add => `ev_int(int_add(#ev_int_1(V1), #ev_int_1(V2)))`
-  | b_sub => `ev_int(int_sub(#ev_int_1(V1), #ev_int_1(V2)))`
-  | b_mul => `ev_int(int_mul(#ev_int_1(V1), #ev_int_1(V2)))`
-  end
-
-and encode_unop(U: unop, V: enc_val smt) : enc_val smt =
-  match U with
-  | u_not => `ev_bool(~#ev_bool_1(V))`
-  | u_neg => `ev_int(int_neg(#ev_int_1(V)))`
-  end
-
-and encode_coll(Vs: value list) : (v_bag_array smt * bool smt) =
-  match Vs with
-  | [] => (`array_const(int_const(0))`, `true`)
-  | V :: Rest =>
-    let (Ev, A1) = encode_exp(v2e(V)) in
-    let (Arr, A2) = encode_coll(Rest) in
-    let New_arr =
-      `array_store(Arr, Ev, int_add(array_select(Arr, Ev), int_const(1)))` in
-    (New_arr, `A1 /\ A2`)
-  end
-
-and encode_entity(Elts: (string, exp) map) : (sv_map_array smt * bool smt) =
-  match Elts with
-  | [] => (`array_const(none)`, `true`)
-  | (L, E) :: Rest =>
-    let (V, A1) = encode_exp(E) in
-    let (Arr, A2) = encode_entity(Rest) in
-    (`array_store(Arr, L, some(V))`, `A1 /\ A2`)
-  end
-  
-and encode_app(Es: exp list) : (enc_val smt list * bool smt) =
-  match Es with
-  | [] => ([], `true`)
-  | E :: Rest =>
-    let (V, A1) = encode_exp(E) in
-    let (Vs, A2) = encode_app(Rest) in
-    (V :: Vs, `A1 /\ A2`)
-  end
-
 fun type_indicator_func_axioms(Fs: (string * typ) list) : bool smt =
   match Fs with
   | [] => `true`
@@ -650,6 +650,16 @@ fun lub_of_changes(C1: change, C2: change) : change =
   end
 
 fun add_edge(N: i32, E: edge, G: graph) : graph =
+  let fun insert(E: edge, Es: edge list) : edge list =
+    match Es with
+    | [] => [E]
+    | (N2, C2) :: Rest =>
+      let N = edge_endpt(E) in
+      let C = edge_change(E) in
+      if N < N2 then E :: Es
+      else if N = N2 then (N, lub_of_changes(C, C2)) :: Rest
+      else (N2, C2) :: insert(E, Rest)
+    end in
   match G with
   | [] => [(N, [E])]
   | (N2, Es) :: Rest =>
@@ -657,49 +667,45 @@ fun add_edge(N: i32, E: edge, G: graph) : graph =
     else if N = N2 then (N, insert(E, Es)) :: Rest
     else (N2, Es) :: add_edge(N, E, Rest)
   end
-and insert(E: edge, Es: edge list) : edge list =
-  match Es with
-  | [] => [E]
-  | (N2, C2) :: Rest =>
-    let N = edge_endpt(E) in
-    let C = edge_change(E) in
-    if N < N2 then E :: Es
-    else if N = N2 then (N, lub_of_changes(C, C2)) :: Rest
-    else (N2, C2) :: insert(E, Rest)
-  end
 
-fun empty_graph2(N: i32, I: i32) : graph =
-  if I < N then (I, []) :: empty_graph2(N, I + 1) else []
-fun empty_graph(N: i32) : graph = empty_graph2(N, 0)
+fun empty_graph(N: i32) : graph =
+  let fun empty_graph(N: i32, I: i32) : graph =
+    if I < N then (I, []) :: empty_graph(N, I + 1) else [] in
+ empty_graph(N, 0)
 
 fun compose(G1: graph, G2: graph) : graph =
-  compose4(G1, G2, empty_graph(length(G1)))
-and compose4(G: graph, Other: graph, Acc: graph) : graph =
-  match G with
-  | [] => Acc
-  | (N, Es) :: Rest =>
-    let Acc = compose1(N, Es, Other, Acc) in
-    compose4(Rest, Other, Acc)
-  end
-and compose1(N: i32, Es: edge list, Other: graph, Acc: graph) : graph =
-  match Es with
-  | [] => Acc
-  | (N2, C) :: Rest =>
-    let some(Es2) = get(N2, Other) in
-    let Acc = compose2(N, C, Es2, Acc) in
-    compose1(N, Rest, Other, Acc)
-  end
-and compose2(N: i32, C: change, Es: edge list, Acc: graph) : graph =
-  match Es with
-  | [] => Acc
-  | E :: Rest =>
-    let New_edge = compose3(C, E) in
-    compose2(N, C, Rest, add_edge(N, New_edge, Acc))
-  end
-and compose3(C: change, E: edge) : edge =
-  let N = edge_endpt(E) in
-  let C1 = edge_change(E) in
-  (N, lub_of_changes(C, C1))
+
+  let fun update_edge(C: change, E: edge) : edge =
+    let N = edge_endpt(E) in
+    let C1 = edge_change(E) in
+    (N, lub_of_changes(C, C1)) in
+
+  let fun update_edges(N: i32, C: change, Es: edge list, Acc: graph) : graph =
+    match Es with
+    | [] => Acc
+    | E :: Rest =>
+      let New_edge = update_edge(C, E) in
+      update_edges(N, C, Rest, add_edge(N, New_edge, Acc))
+    end in
+
+  let fun compose_edges(N: i32, Es: edge list, Acc: graph) : graph =
+    match Es with
+    | [] => Acc
+    | (N2, C) :: Rest =>
+      let some(Es2) = get(N2, G2) in
+      let Acc = update_edges(N, C, Es2, Acc) in
+      compose_edges(N, Rest, Acc)
+    end in
+
+  let fun compose(G: graph, Acc: graph) : graph =
+    match G with
+    | [] => Acc
+    | (N, Es) :: Rest =>
+      let Acc = compose_edges(N, Es, Acc) in
+      compose(Rest, Acc)
+    end in
+
+  compose(G1, empty_graph(length(G1)))
 
 @bottomup
 output size_change_graph(string, string, graph)
@@ -709,15 +715,15 @@ size_change_graph(F1, F3, G3) :-
   G3 = compose(G1, G2).
 
 fun has_decr_edge(G: graph) : bool =
+  let fun has_decr_edge2(N: i32, Es: edge list) : bool =
+    match Es with
+    | [] => false
+    | (M, decr) :: Rest => N = M || has_decr_edge2(N, Rest)
+    | _ :: Rest => has_decr_edge2(N, Rest)
+    end in
   match G with
   | [] => false
   | (N, Es) :: Rest => has_decr_edge2(N, Es) || has_decr_edge(Rest)
-  end
-and has_decr_edge2(N: i32, Es: edge list) : bool =
-  match Es with
-  | [] => false
-  | (M, decr) :: Rest => N = M || has_decr_edge2(N, Rest)
-  | _ :: Rest => has_decr_edge2(N, Rest)
   end
 
 output may_not_terminate(string)
@@ -824,7 +830,6 @@ explore_exp(F, E3, `C /\ A1 /\ A2 /\ int_lt(size(Xe), size(Ee))`) :-
   encode_exp(e_var(X)) = (Xe, A1),
   encode_exp(E1) = (Ee, A2).
 
-(* XXX Don't think we need to explore the type in the ascription... *)
 explore_exp(F, E, C) :-
   explore_exp(F, e_ascribe(E, _), C).
 
@@ -846,33 +851,31 @@ explore_exp(F, E, C) :-
 explore_exps(F, Args, C) :-
   explore_exp(F, e_app(_, Args), C).
 
-fun mk_graph(Fparams: var list, Gparams: exp list, C: bool smt) : graph =
+fun mk_graph(Fparams: var list, Gs: exp list, C: bool smt) : graph =
+  let fun oloop(Fs: var list, Fi: i32, Graph: graph) : graph =
+    match Fs with
+    | [] => Graph
+    | X :: Rest =>
+      let (X, _) = encode_exp(e_var(X)) in
+      let fun iloop(Gs: exp list, Gi: i32, Graph: graph) : graph =
+        match Gs with
+        | [] => Graph
+        | G :: Rest =>
+          let Graph =
+            let C = `axiomization /\ size_axiom1 /\ size_axiom2 /\ size_axiom3 /\ C` in
+            let (V, A) = encode_exp(G) in
+            if is_valid_opt(`C /\ A ==> int_lt(size(V), size(X))`, z3_timeout) = some(true)
+            then add_edge(Fi, (Gi, decr), Graph)
+            else if is_valid_opt(`C /\ A ==> size(V) #= size(X)`, z3_timeout) = some(true)
+            then add_edge(Fi, (Gi, same), Graph)
+            else Graph in
+          iloop(Rest, Gi + 1, Graph)
+        end in
+      let Graph = iloop(Gs, 0, Graph) in
+      oloop(Rest, Fi + 1, Graph)
+    end in
   let Graph = empty_graph(length(Fparams)) in
-  oloop(Fparams, 0, Gparams, C, Graph)
-and oloop(Fs: var list, Fi: i32, Gs: exp list,
-          C: bool smt, Graph: graph) : graph =
-  match Fs with
-  | [] => Graph
-  | X :: Rest =>
-    let (X, _) = encode_exp(e_var(X)) in
-    let Graph = iloop(X, Fi, Gs, 0, C, Graph) in
-    oloop(Rest, Fi + 1, Gs, C, Graph)
-  end
-and iloop(X: enc_val smt, Xi: i32, Gs: exp list, Gi: i32,
-          C: bool smt, Graph: graph) : graph =
-  match Gs with
-  | [] => Graph
-  | G :: Rest =>
-    let Graph =
-      let C = `axiomization /\ size_axiom1 /\ size_axiom2 /\ size_axiom3 /\ C` in
-      let (V, A) = encode_exp(G) in
-      if is_valid_opt(`C /\ A ==> int_lt(size(V), size(X))`, z3_timeout) = some(true)
-      then add_edge(Xi, (Gi, decr), Graph)
-      else if is_valid_opt(`C /\ A ==> size(V) #= size(X)`, z3_timeout) = some(true)
-      then add_edge(Xi, (Gi, same), Graph)
-      else Graph in
-    iloop(X, Xi, Rest, Gi + 1, C, Graph)
-  end
+  oloop(Fparams, 0, Graph)
 
 size_change_graph(F, G, Graph) :-
   explore_exp(F, e_app(G, Args), C),
@@ -900,6 +903,35 @@ explore_typ(F, Ty, `X`, `C /\ size(X) #= size(v_dot(L, V))`) :-
 *******************************************************************************)
 
 fun is_pure(E: exp) : bool =
+  let fun is_determ_accum(E: exp, X: var, Y: var) : bool =
+    let X1 = #{(E, X, Y)}[value] in
+    let X2 = #{(E, X, Y, X1)}[value] in
+    let Y1 = #{(E, X, Y, X1, X2)}[value] in
+    let S1 = [(X, e_var(X1)), (Y, e_var(Y1))] in
+    let E1 = e_let(Y, subst_exp(S1, E), subst_exp1(X, e_var(X2), E)) in
+    let (V1, A1) = encode_exp(E1) in
+    let S2 = [(X, e_var(X2)), (Y, e_var(Y1))] in
+    let E2 = e_let(Y, subst_exp(S2, E), subst_exp1(X, e_var(X1), E)) in
+    let (V2, A2) = encode_exp(E2) in
+    match is_valid_opt(`axiomization /\ A1 /\ A2 ==> V1 #= V2`, z3_timeout) with
+    | none => false
+    | some(B) => B
+    end in
+  let fun is_pure_exps(Es: exp list) : bool =
+    match Es with
+    | [] => true
+    | E :: Rest => is_pure(E) && is_pure_exps(Rest)
+    end in
+  let fun is_pure_type(Ty: typ) : bool =
+    match Ty with
+    | t_any
+    | t_int
+    | t_str
+    | t_bool => true
+    | t_coll(Ty)
+    | t_entity(_, Ty) => is_pure_type(Ty)
+    | t_refine(_, Ty, E) => is_pure_type(Ty) && is_pure(E)
+    end in
   match E with
   | e_var(_)
   | e_bool(_)
@@ -921,35 +953,6 @@ fun is_pure(E: exp) : bool =
   | e_accum(X, E1, Y, E2, E3) =>
     is_pure(E1) && is_pure(E2) && is_pure(E3) && is_determ_accum(E3, X, Y)
   | e_query(X, E1, E2, E3) => is_pure(query2accum(X, E1, E2, E3))
-  end
-and is_determ_accum(E: exp, X: var, Y: var) : bool =
-  let X1 = #{(E, X, Y)}[value] in
-  let X2 = #{(E, X, Y, X1)}[value] in
-  let Y1 = #{(E, X, Y, X1, X2)}[value] in
-  let S1 = [(X, e_var(X1)), (Y, e_var(Y1))] in
-  let E1 = e_let(Y, subst_exp(S1, E), subst_exp1(X, e_var(X2), E)) in
-  let (V1, A1) = encode_exp(E1) in
-  let S2 = [(X, e_var(X2)), (Y, e_var(Y1))] in
-  let E2 = e_let(Y, subst_exp(S2, E), subst_exp1(X, e_var(X1), E)) in
-  let (V2, A2) = encode_exp(E2) in
-  match is_valid_opt(`axiomization /\ A1 /\ A2 ==> V1 #= V2`, z3_timeout) with
-  | none => false
-  | some(B) => B
-  end
-and is_pure_exps(Es: exp list) : bool =
-  match Es with
-  | [] => true
-  | E :: Rest => is_pure(E) && is_pure_exps(Rest)
-  end
-and is_pure_type(Ty: typ) : bool =
-  match Ty with
-  | t_any
-  | t_int
-  | t_str
-  | t_bool => true
-  | t_coll(Ty)
-  | t_entity(_, Ty) => is_pure_type(Ty)
-  | t_refine(_, Ty, E) => is_pure_type(Ty) && is_pure(E)
   end
 
 (*******************************************************************************
@@ -1053,6 +1056,23 @@ fun intersect_types_helper(Ts: typ list) : typ =
 fun intersect_types(Ts: typ list) : typ = intersect_types_helper(filter_any(Ts))
 
 fun norm(T: typ) : r_typ list =
+  let fun norm_r(X: var, C: typ list, E: exp) : r_typ list =
+    match E with
+    | e_type_test(e_var(Y), T) =>
+      if X = Y && !is_free_in_type(X, T)
+      then norm(intersect_types(T :: C))
+      else [(X, C, E)]
+    | e_binop(b_or, E1, E2) => append(norm_r(X, C, E1), norm_r(X, C, E2))
+    | e_binop(b_and, E1, E2) => conj_dd(norm_r(X, C, E1), norm_r(X, C, E2))
+    | _ => [(X, C, E)]
+    end in
+  let fun norm_helper(X: var, E: exp, Rs: r_typ list) : r_typ list =
+    match Rs with
+    | [] => []
+    | R :: Rs =>
+      (* This differs from what's in the paper. *)
+      append(conj_rd(R, norm_r(X, [], E)), norm_helper(X, E, Rs))
+    end in
   match T with
   | t_any
   | t_int
@@ -1061,23 +1081,6 @@ fun norm(T: typ) : r_typ list =
   | t_coll(_)
   | t_entity(_, _) => [(#norm[value], [T], e_bool(true))]
   | t_refine(X, T, E) => norm_helper(X, E, norm(T))
-  end
-and norm_helper(X: var, E: exp, Rs: r_typ list) : r_typ list =
-  match Rs with
-  | [] => []
-  | R :: Rs =>
-    (* This differs from what's in the paper. *)
-    append(conj_rd(R, norm_r(X, [], E)), norm_helper(X, E, Rs))
-  end
-and norm_r(X: var, C: typ list, E: exp) : r_typ list =
-  match E with
-  | e_type_test(e_var(Y), T) =>
-    if X = Y && !is_free_in_type(X, T)
-    then norm(intersect_types(T :: C))
-    else [(X, C, E)]
-  | e_binop(b_or, E1, E2) => append(norm_r(X, C, E1), norm_r(X, C, E2))
-  | e_binop(b_and, E1, E2) => conj_dd(norm_r(X, C, E1), norm_r(X, C, E2))
-  | _ => [(X, C, E)]
   end
 
 (*******************************************************************************
