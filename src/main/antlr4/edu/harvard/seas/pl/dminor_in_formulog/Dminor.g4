@@ -1,5 +1,10 @@
 grammar Dminor;
 
+prog
+:
+	module*
+;
+
 module
 :
 	'module' name = ID '{'

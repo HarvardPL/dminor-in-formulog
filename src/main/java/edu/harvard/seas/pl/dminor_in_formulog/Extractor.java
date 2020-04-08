@@ -77,12 +77,16 @@ public final class Extractor {
 		throw new AssertionError("impossible");
 	}
 
-	public static Module extract(Reader r) throws IOException {
+	public static List<Module> extract(Reader r) throws IOException {
 		CharStream chars = CharStreams.fromReader(r);
 		DminorLexer lexer = new DminorLexer(chars);
 		CommonTokenStream tokens = new CommonTokenStream(lexer);
 		DminorParser parser = new DminorParser(tokens);
-		return parser.module().accept(new ModuleExtractor());
+		List<Module> modules = new ArrayList<>();
+		for (ModuleContext modCtx : parser.prog().module()) {
+			modules.add(modCtx.accept(new ModuleExtractor()));
+		}
+		return modules;
 	}
 
 	private static class ModuleExtractor extends DminorBaseVisitor<Module> {
@@ -93,6 +97,8 @@ public final class Extractor {
 
 		private final Map<String, String> typeIndicatorFuncs = new HashMap<>();
 
+		private String modName;
+
 		public ModuleExtractor() {
 			typeAlias.put("Any", "t_any");
 			typeAlias.put("Integer32", "t_int");
@@ -100,16 +106,28 @@ public final class Extractor {
 			typeAlias.put("Text", "t_str");
 		}
 
+		private String qualifyId(String id) {
+			switch (id) {
+			case "Any":
+			case "Integer32":
+			case "Logical":
+			case "Text":
+				return id;
+			default:
+				return modName + "." + id;
+			}
+		}
+
 		@Override
 		public Module visitModule(ModuleContext ctx) {
-			String name = ctx.name.getText();
+			modName = ctx.name.getText();
 			ctx.typeDef().forEach(typeDef -> handleTypeDefinition(typeDef));
 			ctx.funcDef().forEach(func -> func.accept(funcExtractor));
-			return new Module(name, funcs, typeAlias, typeIndicatorFuncs);
+			return new Module(modName, funcs, typeAlias, typeIndicatorFuncs);
 		}
 
 		private void handleTypeDefinition(TypeDefContext ctx) {
-			String typeName = ctx.name.getText();
+			String typeName = qualifyId(ctx.name.getText());
 			TypeNameExtractor tne = new TypeNameExtractor();
 			ctx.typ().accept(tne);
 			if (tne.getTypeNames().contains(typeName)) {
@@ -140,7 +158,7 @@ public final class Extractor {
 
 			@Override
 			public Void visitNamedType(NamedTypeContext ctx) {
-				String name = ctx.ID().getText();
+				String name = qualifyId(ctx.ID().getText());
 				typeNames.add(name);
 				return null;
 			}
@@ -151,10 +169,10 @@ public final class Extractor {
 
 			@Override
 			public String visitNamedType(NamedTypeContext ctx) {
-				String name = ctx.ID().getText();
+				String name = qualifyId(ctx.ID().getText());
 				String type = typeAlias.get(name);
 				if (type == null) {
-					throw new AssertionError("Unrecognized type: " + name);
+					throw new AssertionError("Unrecognized type: " + name + "/" + qualifyId(name));
 				}
 				return type;
 			}
@@ -170,7 +188,7 @@ public final class Extractor {
 			}
 
 			private String makeRecordType(RecordDefEntryContext ctx) {
-				String label = "\"" + ctx.ID().getText() + "\"";
+				String label = "\"" + qualifyId(ctx.ID().getText()) + "\"";
 				String entryType = ctx.typ().accept(this);
 				return "t_entity(" + label + ", " + entryType + ")";
 			}
@@ -210,7 +228,7 @@ public final class Extractor {
 
 			@Override
 			public Void visitFuncDef(FuncDefContext ctx) {
-				String name = ctx.name.getText();
+				String name = qualifyId(ctx.name.getText());
 				List<Pair<String, String>> paramsAndTypes = new ArrayList<>();
 				for (ParamContext pctx : ctx.params().param()) {
 					String param = toVar(pctx.name.getText());
@@ -280,9 +298,9 @@ public final class Extractor {
 			@Override
 			public String visitCallExpr(CallExprContext ctx) {
 				String args = ctx.args().accept(this);
-				return "e_app(\"" + ctx.func.getText() + "\", " + args + ")";
+				return "e_app(\"" + qualifyId(ctx.func.getText()) + "\", " + args + ")";
 			}
-		
+
 			@Override
 			public String visitArgs(ArgsContext ctx) {
 				List<String> args = ctx.expr().stream().map(e -> e.accept(this)).collect(Collectors.toList());
@@ -296,7 +314,7 @@ public final class Extractor {
 				s += "]";
 				return s;
 			}
-			
+
 			@Override
 			public String visitCollExpr(CollExprContext ctx) {
 				String s = "e_coll([])";
@@ -314,7 +332,7 @@ public final class Extractor {
 				if (label.equals("Count")) {
 					return makeCount(expr);
 				} else {
-					return "e_select(" + expr + ", \"" + label + "\")";
+					return "e_select(" + expr + ", \"" + qualifyId(label) + "\")";
 				}
 			}
 
@@ -331,7 +349,7 @@ public final class Extractor {
 				for (Iterator<RecordEntryContext> it = ctx.recordEntries().recordEntry().iterator(); it.hasNext();) {
 					RecordEntryContext rectx = it.next();
 					s += "(\"";
-					s += rectx.ID().getText();
+					s += qualifyId(rectx.ID().getText());
 					s += "\", ";
 					s += rectx.expr().accept(this);
 					s += ")";
@@ -441,8 +459,9 @@ public final class Extractor {
 
 		};
 
-		private int valueCnt = 0;
-		private int varCnt = 0;
+		private int varCnt;
+
+		private int valueCnt;
 
 		private String incrValueCnt() {
 			valueCnt++;
@@ -464,7 +483,8 @@ public final class Extractor {
 			if (name.equals("value")) {
 				name = "value" + valueCnt;
 			}
-			return "#" + name + "[value]";
+			name = qualifyId(name);
+			return "#{\"" + name + "\"}[value]";
 		}
 
 	}
