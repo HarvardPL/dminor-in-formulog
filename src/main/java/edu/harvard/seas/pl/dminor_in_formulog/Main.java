@@ -18,7 +18,7 @@ public class Main {
 
 	private static void openWriters(Path outDir) throws IOException {
 		for (Relation rel : Relation.values()) {
-			Path out = outDir.resolve(rel + ".csv");
+			Path out = outDir.resolve("raw_" + rel + ".tsv");
 			writers.put(rel, Files.newBufferedWriter(out, opts));
 		}
 	}
@@ -46,11 +46,11 @@ public class Main {
 	}
 
 	public synchronized static void main(String[] args) throws IOException {
-		if (args.length != 1) {
-			throw new IllegalArgumentException("Expected a single argument (the Dminor file to process).");
+		if (args.length != 2) {
+			throw new IllegalArgumentException("needs two arguments: dminor file and output directory");
 		}
 		String file = args[0];
-		Path outDir = Paths.get(file + "_facts");
+		Path outDir = Paths.get(args[1]);
 		Files.createDirectories(outDir);
 		openWriters(outDir);
 		for (Module mod : Extractor.extract(new FileReader(file))) {

@@ -67,7 +67,7 @@ fun fail(Msg: 'a) : 'b =
 
 fun assert(Cond: bool, Msg: 'a) : bool = Cond || fail(Msg)
 
-fun z3_timeout : i32 option = some(100)
+fun solver_timeout : i32 option = some(100)
 
 (*******************************************************************************
   Program representation 
@@ -125,6 +125,9 @@ and typ =
   | t_coll(typ)
   | t_refine(var, typ, exp)
   | t_entity(string, typ)
+  | t_union(typ, typ)
+  | t_intersection(typ, typ)
+  | t_singleton(exp, typ)
 
 fun v2e(V: value) : exp =
   let fun vs2es(Vs: value list) : exp list =
@@ -153,14 +156,10 @@ fun union2accum(E1: exp, E2: exp) : exp =
   let Y = #{X}[value] in
   e_accum(X, E1, Y, E2, e_add(e_var(X), e_var(Y)))
 
-@external
-input func_sig(string, (var * typ) list, typ, exp)
-@external
-input labeled_pure(string)
-@external
-input type_alias(string, typ)
-@external
-input type_indicator_func(string, typ)
+output func_sig(string, (var * typ) list, typ, exp)
+output labeled_pure(string)
+output type_alias(string, typ)
+output type_indicator_func(string, typ)
 
 (*******************************************************************************
   Substitution 
@@ -606,10 +605,13 @@ fun type_indicator_func_axioms(Fs: (string * typ) list) : bool smt =
       `forall X : apply(F, [X]).
         apply(F, [X]) #= ev_bool(true) <==> Phi` in
     let Tifa = type_indicator_func_axioms(Fs) in
-    `A /\ U /\ Tifa`
+    match A with
+    | `true` => `U /\ Tifa`
+    | _ => `U /\ A /\ Tifa`
+    end
   end
 
-fun axiomization : bool smt =
+fun axiomatization : bool smt =
   let Tifa = type_indicator_func_axioms(type_indicator_func(??,??)) in
   `coll_axiom1 /\
    coll_axiom2 /\
@@ -734,9 +736,9 @@ may_not_terminate(F) :-
   !has_decr_edge(G).
 
 @bottomup
-output explore_exp(string, exp, bool smt)
+output explore_exp(string, exp, bool smt list)
 @bottomup
-output explore_typ(string, typ, enc_val smt, bool smt)
+output explore_typ(string, typ, enc_val smt, bool smt list)
 
 uninterpreted fun size(enc_val smt) : int smt
 
@@ -764,7 +766,7 @@ fun encode_params(Params: (var * typ) list) : bool smt =
     `A /\ Phi /\ Rest`
   end
 
-explore_exp(F, E, Phi) :-
+explore_exp(F, E, [Phi]) :-
   labeled_pure(F),
   func_sig(F, Params, _, E),
   Phi = encode_params(Params).
@@ -772,7 +774,7 @@ explore_exp(F, E, Phi) :-
 explore_exp(F, E, C) :-
   explore_exp(F, e_type_test(E, _Ty), C).
 
-explore_typ(F, Ty, V, `C /\ A`) :-
+explore_typ(F, Ty, V, A :: C) :-
   explore_exp(F, e_type_test(E, Ty), C),
   (V, A) = encode_exp(E).
 
@@ -788,18 +790,18 @@ explore_exp(F, E, C) :-
 explore_exp(F, E1, C) :-
   explore_exp(F, e_cond(E1, _, _), C).
 
-explore_exp(F, E2, `C /\ A /\ #ev_bool_1(V)`) :-
+explore_exp(F, E2, `#ev_bool_1(V)` :: A :: C) :-
   explore_exp(F, e_cond(E1, E2, _), C),
   encode_exp(E1) = (V, A).
 
-explore_exp(F, E3, `C /\ A /\ ~#ev_bool_1(V)`) :-
+explore_exp(F, E3, `~#ev_bool_1(V)` :: A :: C) :-
   explore_exp(F, e_cond(E1, _, E3), C),
   encode_exp(E1) = (V, A).
 
 explore_exp(F, E1, C) :-
   explore_exp(F, e_let(_X, E1, _), C).
 
-explore_exp(F, E2, `C /\ A1 /\ A2 /\ Xe #= Ee`) :-
+explore_exp(F, E2, `Xe #= Ee` :: A2 :: A1 :: C) :-
   explore_exp(F, e_let(X, E1, E2), C),
   encode_exp(e_var(X)) = (Xe, A1),
   encode_exp(E1) = (Ee, A2).
@@ -825,7 +827,7 @@ explore_exp(F, E2, C) :-
 explore_exp(F, query2accum(X, E1, E2, E3), C) :-
   explore_exp(F, e_query(X, E1, E2, E3), C).
 
-explore_exp(F, E3, `C /\ A1 /\ A2 /\ int_lt(size(Xe), size(Ee))`) :-
+explore_exp(F, E3, `int_lt(size(Xe), size(Ee))` :: A2 :: A1 :: C) :-
   explore_exp(F, e_accum(X, E1, _, _, E3), C),
   encode_exp(e_var(X)) = (Xe, A1),
   encode_exp(E1) = (Ee, A2).
@@ -834,7 +836,7 @@ explore_exp(F, E, C) :-
   explore_exp(F, e_ascribe(E, _), C).
 
 @bottomup
-output explore_exps(string, exp list, bool smt)
+output explore_exps(string, exp list, bool smt list)
 explore_exp(F, E, C) :-
   explore_exps(F, E :: _Rest, C).
 
@@ -851,7 +853,7 @@ explore_exp(F, E, C) :-
 explore_exps(F, Args, C) :-
   explore_exp(F, e_app(_, Args), C).
 
-fun mk_graph(Fparams: var list, Gs: exp list, C: bool smt) : graph =
+fun mk_graph(Fparams: var list, Gs: exp list, C: bool smt list) : graph =
   let fun oloop(Fs: var list, Fi: i32, Graph: graph) : graph =
     match Fs with
     | [] => Graph
@@ -862,11 +864,11 @@ fun mk_graph(Fparams: var list, Gs: exp list, C: bool smt) : graph =
         | [] => Graph
         | G :: Rest =>
           let Graph =
-            let C = `axiomization /\ size_axiom1 /\ size_axiom2 /\ size_axiom3 /\ C` in
+            let C = append(C, [size_axiom3, size_axiom2, size_axiom1, axiomatization]) in
             let (V, A) = encode_exp(G) in
-            if is_valid_opt(`C /\ A ==> int_lt(size(V), size(X))`, z3_timeout) = some(true)
+            if is_sat_opt(`~int_lt(size(V), size(X))` :: A :: C, solver_timeout) = some(false)
             then add_edge(Fi, (Gi, decr), Graph)
-            else if is_valid_opt(`C /\ A ==> size(V) #= size(X)`, z3_timeout) = some(true)
+            else if is_sat_opt(`~(size(V) #= size(X))` :: A :: C, solver_timeout) = some(false)
             then add_edge(Fi, (Gi, same), Graph)
             else Graph in
           iloop(Rest, Gi + 1, Graph)
@@ -883,18 +885,18 @@ size_change_graph(F, G, Graph) :-
   (Params, _) = unzip(Params_and_types),
   Graph = mk_graph(Params, Args, C).
 
-explore_typ(F, Ty, `X`, `C /\ mem(X, V)`) :-
+explore_typ(F, Ty, `X`, `mem(X, V)` :: C) :-
   explore_typ(F, t_coll(Ty), V, C),
   X = #{(F, Ty, V, C)}[enc_val].
 
 explore_typ(F, Ty, V, C) :-
   explore_typ(F, t_refine(_, Ty, _), V, C).
 
-explore_exp(F, E, `C /\ size(Y) #= size(V)`) :-
+explore_exp(F, E, `size(Y) #= size(V)` :: C) :-
   explore_typ(F, t_refine(X, _, E), V, C),
   Y = #{X}[enc_val].
 
-explore_typ(F, Ty, `X`, `C /\ size(X) #= size(v_dot(L, V))`) :-
+explore_typ(F, Ty, `X`, `size(X) #= size(v_dot(L, V))` :: C) :-
   explore_typ(F, t_entity(L, Ty), V, C),
   X = #{(F, Ty, V, C)}[enc_val].
 
@@ -913,9 +915,9 @@ fun is_pure(E: exp) : bool =
     let S2 = [(X, e_var(X2)), (Y, e_var(Y1))] in
     let E2 = e_let(Y, subst_exp(S2, E), subst_exp1(X, e_var(X1), E)) in
     let (V2, A2) = encode_exp(E2) in
-    match is_valid_opt(`axiomization /\ A1 /\ A2 ==> V1 #= V2`, z3_timeout) with
+    match is_sat_opt(`~(V1 #= V2)` :: [A2, A1, axiomatization], solver_timeout) with
     | none => false
-    | some(B) => B
+    | some(B) => !B
     end in
   let fun is_pure_exps(Es: exp list) : bool =
     match Es with
@@ -1235,8 +1237,8 @@ fun items(Env: env, Rs: r_typ list) : typ option =
       let Phi1 = encode_env(Env) in
       let (Phi2, A1) = encode_type(intersect_types(C), `#{X}[enc_val]`) in
       let (V, A2) = encode_exp(E) in
-      let Formula = `A1 /\ A2 /\ Phi1 /\ Phi2 ==> V #= ev_bool(false)` in
-      if is_valid_opt(Formula, z3_timeout) = some(true)
+      let Premises = [Phi2, Phi1, A2, A1, axiomatization] in
+      if is_sat_opt(`~(V #= ev_bool(false))` :: Premises, solver_timeout) = some(false)
       then items(Env, Rs)
       else none
     end
@@ -1342,8 +1344,8 @@ fun fields(Env: env, Rs: r_typ list, L: string) : typ option =
       let Phi1 = encode_env(Env) in
       let (Phi2, A1) = encode_type(intersect_types(C), `#{X}[enc_val]`) in
       let (V, A2) = encode_exp(E) in
-      let Formula = `A1 /\ A2 /\ Phi1 /\ Phi2 ==> V #= ev_bool(false)` in
-      if is_valid_opt(Formula, z3_timeout) = some(true)
+      let Premises = [Phi2, Phi1, A2, A1, axiomatization] in
+      if is_sat_opt(`~(V #= ev_bool(false))` :: Premises, solver_timeout) = some(false)
       then fields(Env, Rs, L)
       else none
     end
@@ -1405,8 +1407,8 @@ subtype(Env, T, T1) :-
   X = `#{(Env, T, T1)}[enc_val]`,
   encode_type(T, X) = (Phi2, Axioms1),
   encode_type(T1, X) = (Phi3, Axioms2),
-  Axioms = `axiomization /\ Axioms1 /\ Axioms2`,
-  is_valid_opt(`Axioms /\ Phi1 /\ Phi2 ==> Phi3`, z3_timeout) = some(true).
+  Premises = [Phi2, Phi1, Axioms2, Axioms1, axiomatization],
+  is_sat_opt(`~Phi3` :: Premises, solver_timeout) = some(false).
 
 (*******************************************************************************
   Program checking
@@ -1445,3 +1447,265 @@ type_not_ok(Name) :-
 prog_ok :-
   !func_not_ok(_),
   !type_not_ok(_).
+
+(*******************************************************************************
+  Input conversion
+*******************************************************************************)
+
+@external
+input raw_func_sig(string, (var * typ) list, typ, exp)
+@external
+input raw_labeled_pure(string)
+@external
+input raw_type_alias(string, typ)
+@external
+input raw_type_indicator_func(string, typ)
+
+fun process_raw_type(ty: typ) : typ =
+  match ty with
+  | t_any
+  | t_int
+  | t_str
+  | t_bool => ty
+  | t_coll(ty) => t_coll(process_raw_type(ty))
+  | t_refine(x, ty, e) =>
+    t_refine(x, process_raw_type(ty), process_raw_exp(e))
+  | t_entity(x, ty) =>
+    t_entity(x, process_raw_type(ty))
+  | t_union(ty1, ty2) =>
+    let ty1 = process_raw_type(ty1) in
+    let ty2 = process_raw_type(ty2) in
+    union_type(ty1, ty2)
+  | t_intersection(ty1, ty2) =>
+    let ty1 = process_raw_type(ty1) in
+    let ty2 = process_raw_type(ty2) in
+    intersection_type(ty1, ty2)
+  | t_singleton(e, ty) =>
+    singleton_type(process_raw_exp(e), process_raw_type(ty))
+  end
+
+and process_raw_exp(e: exp) : exp =
+  match e with
+  | e_var(_)
+  | e_null
+  | e_int(_)
+  | e_bool(_)
+  | e_str(_)
+  | e_coll(_) => e
+  | e_type_test(e, ty) =>
+    e_type_test(process_raw_exp(e), process_raw_type(ty))
+  | e_binop(op, e1, e2) =>
+    let e1 = process_raw_exp(e1) in
+    let e2 = process_raw_exp(e2) in
+    e_binop(op, e1, e2)
+  | e_unop(op, e) => e_unop(op, process_raw_exp(e))
+  | e_cond(e1, e2, e3) =>
+    let e1 = process_raw_exp(e1) in
+    let e2 = process_raw_exp(e2) in
+    let e3 = process_raw_exp(e3) in
+    e_cond(e1, e2, e3)
+  | e_let(x, e1, e2) =>
+    let e1 = process_raw_exp(e1) in
+    let e2 = process_raw_exp(e2) in
+    e_let(x, e1, e2) 
+  | e_add(e1, e2) =>
+    let e1 = process_raw_exp(e1) in
+    let e2 = process_raw_exp(e2) in
+    e_add(e1, e2)
+  | e_union(e1, e2) =>
+    let e1 = process_raw_exp(e1) in
+    let e2 = process_raw_exp(e2) in
+    e_union(e1, e2)
+  | e_accum(x, e1, y, e2, e3) =>
+    let e1 = process_raw_exp(e1) in
+    let e2 = process_raw_exp(e2) in
+    let e3 = process_raw_exp(e3) in
+    e_accum(x, e1, y, e2, e3)
+  | e_query(x, e1, e2, e3) =>
+    let e1 = process_raw_exp(e1) in
+    let e2 = process_raw_exp(e2) in
+    let e3 = process_raw_exp(e3) in
+    e_query(x, e1, e2, e3)
+  | e_ascribe(e, ty) =>
+    e_ascribe(process_raw_exp(e), process_raw_type(ty))
+  | e_entity(m) =>
+    let (ls, es) = unzip(m) in
+    let es = process_raw_exps(es) in
+    e_entity(zip(ls, es))
+  | e_select(e, l) => e_select(process_raw_exp(e), l)
+  | e_app(f, es) => e_app(f, process_raw_exps(es))
+  end
+    
+and process_raw_exps(es: exp list) : exp list =
+  match es with
+  | [] => []
+  | h :: t => process_raw_exp(h) :: process_raw_exps(t)
+  end
+
+labeled_pure(X) :-
+  raw_labeled_pure(X).
+
+type_alias(Alias, process_raw_type(Ty)) :-
+  raw_type_alias(Alias, Ty).
+
+fun process_raw_types(tys: typ list) : typ list =
+  match tys with
+  | [] => []
+  | h :: t => process_raw_type(h) :: process_raw_types(t)
+  end
+
+func_sig(Func, NewParams, NewRetType, NewBody) :-
+  raw_func_sig(Func, Params, RetType, Body),
+  (Vars, Types) = unzip(Params),
+  NewTypes = process_raw_types(Types),
+  NewParams = zip(Vars, NewTypes), 
+  NewRetType = process_raw_type(RetType),
+  NewBody = process_raw_exp(Body).
+
+fun is_pure_no_type_axioms(E: exp) : bool =
+  let fun is_determ_accum(E: exp, X: var, Y: var) : bool =
+    let X1 = #{(E, X, Y)}[value] in
+    let X2 = #{(E, X, Y, X1)}[value] in
+    let Y1 = #{(E, X, Y, X1, X2)}[value] in
+    let S1 = [(X, e_var(X1)), (Y, e_var(Y1))] in
+    let E1 = e_let(Y, subst_exp(S1, E), subst_exp1(X, e_var(X2), E)) in
+    let (V1, A1) = encode_exp(E1) in
+    let S2 = [(X, e_var(X2)), (Y, e_var(Y1))] in
+    let E2 = e_let(Y, subst_exp(S2, E), subst_exp1(X, e_var(X1), E)) in
+    let (V2, A2) = encode_exp(E2) in
+    match is_sat_opt(`~(V1 #= V2)` :: [A2, A1], solver_timeout) with
+    | none => false
+    | some(B) => !B
+    end in
+  let fun is_pure_no_type_axioms_exps(Es: exp list) : bool =
+    match Es with
+    | [] => true
+    | E :: Rest => is_pure_no_type_axioms(E) && is_pure_no_type_axioms_exps(Rest)
+    end in
+  let fun is_pure_no_type_axioms_type(Ty: typ) : bool =
+    match Ty with
+    | t_any
+    | t_int
+    | t_str
+    | t_bool => true
+    | t_coll(Ty)
+    | t_entity(_, Ty) => is_pure_no_type_axioms_type(Ty)
+    | t_refine(_, Ty, E) => is_pure_no_type_axioms_type(Ty) && is_pure_no_type_axioms(E)
+    end in
+  match E with
+  | e_var(_)
+  | e_bool(_)
+  | e_null
+  | e_int(_)
+  | e_str(_)
+  | e_coll(_) => true
+  | e_unop(_, E)
+  | e_ascribe(E, _)
+  | e_select(E, _) => is_pure_no_type_axioms(E)
+  | e_binop(_, E1, E2)
+  | e_let(_, E1, E2)
+  | e_union(E1, E2)
+  | e_add(E1, E2) => is_pure_no_type_axioms(E1) && is_pure_no_type_axioms(E2)
+  | e_cond(E1, E2, E3) => is_pure_no_type_axioms(E1) && is_pure_no_type_axioms(E2) && is_pure_no_type_axioms(E3)
+  | e_type_test(E, Ty) => is_pure_no_type_axioms(E) && is_pure_no_type_axioms_type(Ty)
+  | e_entity(Elts) => let (_, Es) = unzip(Elts) in is_pure_no_type_axioms_exps(Es)
+  | e_app(F, Es) => labeled_pure(F) && is_pure_no_type_axioms_exps(Es)
+  | e_accum(X, E1, Y, E2, E3) =>
+    is_pure_no_type_axioms(E1) && is_pure_no_type_axioms(E2) && is_pure_no_type_axioms(E3) && is_determ_accum(E3, X, Y)
+  | e_query(X, E1, E2, E3) => is_pure_no_type_axioms(query2accum(X, E1, E2, E3))
+  end
+
+fun singleton_type_no_type_axioms(E: exp, T: typ) : typ =
+  if is_pure_no_type_axioms(E) then
+    let X = #{(E, T)}[value] in
+    t_refine(X, T, e_binop(b_eq, e_var(X), E))
+  else T
+
+fun tif_process_raw_type(ty: typ) : typ =
+  match ty with
+  | t_any
+  | t_int
+  | t_str
+  | t_bool => ty
+  | t_coll(ty) => t_coll(tif_process_raw_type(ty))
+  | t_refine(x, ty, e) =>
+    t_refine(x, tif_process_raw_type(ty), tif_process_raw_exp(e))
+  | t_entity(x, ty) =>
+    t_entity(x, tif_process_raw_type(ty))
+  | t_union(ty1, ty2) =>
+    let ty1 = tif_process_raw_type(ty1) in
+    let ty2 = tif_process_raw_type(ty2) in
+    union_type(ty1, ty2)
+  | t_intersection(ty1, ty2) =>
+    let ty1 = tif_process_raw_type(ty1) in
+    let ty2 = tif_process_raw_type(ty2) in
+    intersection_type(ty1, ty2)
+  | t_singleton(e, ty) => singleton_type_no_type_axioms(e, ty)
+  end
+
+and tif_process_raw_exp(e: exp) : exp =
+  match e with
+  | e_var(_)
+  | e_null
+  | e_int(_)
+  | e_bool(_)
+  | e_str(_)
+  | e_coll(_) => e
+  | e_type_test(e, ty) =>
+    e_type_test(tif_process_raw_exp(e), tif_process_raw_type(ty))
+  | e_binop(op, e1, e2) =>
+    let e1 = tif_process_raw_exp(e1) in
+    let e2 = tif_process_raw_exp(e2) in
+    e_binop(op, e1, e2)
+  | e_unop(op, e) => e_unop(op, tif_process_raw_exp(e))
+  | e_cond(e1, e2, e3) =>
+    let e1 = tif_process_raw_exp(e1) in
+    let e2 = tif_process_raw_exp(e2) in
+    let e3 = tif_process_raw_exp(e3) in
+    e_cond(e1, e2, e3)
+  | e_let(x, e1, e2) =>
+    let e1 = tif_process_raw_exp(e1) in
+    let e2 = tif_process_raw_exp(e2) in
+    e_let(x, e1, e2) 
+  | e_add(e1, e2) =>
+    let e1 = tif_process_raw_exp(e1) in
+    let e2 = tif_process_raw_exp(e2) in
+    e_add(e1, e2)
+  | e_union(e1, e2) =>
+    let e1 = tif_process_raw_exp(e1) in
+    let e2 = tif_process_raw_exp(e2) in
+    e_union(e1, e2)
+  | e_accum(x, e1, y, e2, e3) =>
+    let e1 = tif_process_raw_exp(e1) in
+    let e2 = tif_process_raw_exp(e2) in
+    let e3 = tif_process_raw_exp(e3) in
+    e_accum(x, e1, y, e2, e3)
+  | e_query(x, e1, e2, e3) =>
+    let e1 = tif_process_raw_exp(e1) in
+    let e2 = tif_process_raw_exp(e2) in
+    let e3 = tif_process_raw_exp(e3) in
+    e_query(x, e1, e2, e3)
+  | e_ascribe(e, ty) =>
+    e_ascribe(tif_process_raw_exp(e), tif_process_raw_type(ty))
+  | e_entity(m) =>
+    let (ls, es) = unzip(m) in
+    let es = tif_process_raw_exps(es) in
+    e_entity(zip(ls, es))
+  | e_select(e, l) => e_select(tif_process_raw_exp(e), l)
+  | e_app(f, es) => e_app(f, tif_process_raw_exps(es))
+  end
+    
+and tif_process_raw_exps(es: exp list) : exp list =
+  match es with
+  | [] => []
+  | h :: t => tif_process_raw_exp(h) :: tif_process_raw_exps(t)
+  end
+
+type_indicator_func(Func, tif_process_raw_type(Ty)) :-
+  raw_type_indicator_func(Func, Ty).
+
+(*******************************************************************************
+  Codegen 
+*******************************************************************************)
+
+fun dummy : bool = is_sat(`smt_var[string, value]("hello") #= v_null`).

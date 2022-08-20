@@ -37,9 +37,6 @@ import org.antlr.v4.runtime.CharStreams;
 import org.antlr.v4.runtime.CommonTokenStream;
 import org.antlr.v4.runtime.misc.Pair;
 
-import edu.harvard.seas.pl.dminor_in_formulog.DminorBaseVisitor;
-import edu.harvard.seas.pl.dminor_in_formulog.DminorLexer;
-import edu.harvard.seas.pl.dminor_in_formulog.DminorParser;
 import edu.harvard.seas.pl.dminor_in_formulog.DminorParser.AccumExprContext;
 import edu.harvard.seas.pl.dminor_in_formulog.DminorParser.ArgsContext;
 import edu.harvard.seas.pl.dminor_in_formulog.DminorParser.AscribeExprContext;
@@ -182,7 +179,7 @@ public final class Extractor {
 				List<RecordDefEntryContext> rectxs = new ArrayList<>(ctx.recordDefEntries().recordDefEntry());
 				String type = makeRecordType(rectxs.remove(rectxs.size() - 1));
 				for (RecordDefEntryContext rectx : rectxs) {
-					type = "intersection_type(" + makeRecordType(rectx) + ", " + type + ")";
+					type = "t_intersection(" + makeRecordType(rectx) + ", " + type + ")";
 				}
 				return type;
 			}
@@ -206,14 +203,14 @@ public final class Extractor {
 			public String visitSingletonType(SingletonTypeContext ctx) {
 				String expr = ctx.expr().accept(exprExtractor);
 				// XXX Not sure if t_any is right or if there is something more exact...
-				return "singleton_type(" + expr + ", t_any)";
+				return "t_singleton(" + expr + ", t_any)";
 			}
 
 			@Override
 			public String visitUnionType(UnionTypeContext ctx) {
 				String type1 = ctx.typ(0).accept(this);
 				String type2 = ctx.typ(1).accept(this);
-				return "union_type(" + type1 + ", " + type2 + ")";
+				return "t_union(" + type1 + ", " + type2 + ")";
 			}
 
 			@Override
@@ -484,7 +481,7 @@ public final class Extractor {
 				name = "value" + valueCnt;
 			}
 			name = qualifyId(name);
-			return "#{\"" + name + "\"}[value]";
+			return "smt_var__string__value(\"" + name + "\")";
 		}
 
 	}
