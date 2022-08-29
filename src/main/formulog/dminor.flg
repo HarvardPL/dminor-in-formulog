@@ -156,10 +156,10 @@ fun union2accum(E1: exp, E2: exp) : exp =
   let Y = #{X}[value] in
   e_accum(X, E1, Y, E2, e_add(e_var(X), e_var(Y)))
 
-output func_sig(string, (var * typ) list, typ, exp)
-output labeled_pure(string)
-output type_alias(string, typ)
-output type_indicator_func(string, typ)
+rel func_sig(string, (var * typ) list, typ, exp)
+rel labeled_pure(string)
+rel type_alias(string, typ)
+rel type_indicator_func(string, typ)
 
 (*******************************************************************************
   Substitution 
@@ -710,7 +710,7 @@ fun compose(G1: graph, G2: graph) : graph =
   compose(G1, empty_graph(length(G1)))
 
 @bottomup
-output size_change_graph(string, string, graph)
+rel size_change_graph(string, string, graph)
 size_change_graph(F1, F3, G3) :-
   size_change_graph(F1, F2, G1),
   size_change_graph(F2, F3, G2),
@@ -728,7 +728,7 @@ fun has_decr_edge(G: graph) : bool =
   | (N, Es) :: Rest => has_decr_edge2(N, Es) || has_decr_edge(Rest)
   end
 
-output may_not_terminate(string)
+rel may_not_terminate(string)
 
 may_not_terminate(F) :-
   size_change_graph(F, F, G),
@@ -736,9 +736,9 @@ may_not_terminate(F) :-
   !has_decr_edge(G).
 
 @bottomup
-output explore_exp(string, exp, bool smt list)
+rel explore_exp(string, exp, bool smt list)
 @bottomup
-output explore_typ(string, typ, enc_val smt, bool smt list)
+rel explore_typ(string, typ, enc_val smt, bool smt list)
 
 uninterpreted fun size(enc_val smt) : int smt
 
@@ -836,7 +836,7 @@ explore_exp(F, E, C) :-
   explore_exp(F, e_ascribe(E, _), C).
 
 @bottomup
-output explore_exps(string, exp list, bool smt list)
+rel explore_exps(string, exp list, bool smt list)
 explore_exp(F, E, C) :-
   explore_exps(F, E :: _Rest, C).
 
@@ -1090,15 +1090,15 @@ fun norm(T: typ) : r_typ list =
 *******************************************************************************)
 
 @topdown
-output synth(env, exp, typ)
+rel synth(env, exp, typ)
 @topdown
-output check(env, exp, typ)
+rel check(env, exp, typ)
 @topdown
-output env_wf(env)
+rel env_wf(env)
 @topdown
-output type_wf(env, typ)
+rel type_wf(env, typ)
 @topdown
-output subtype(env, typ, typ)
+rel subtype(env, typ, typ)
 
 env_wf([]).
 env_wf(env_bind(X, T) :: Env) :-
@@ -1147,7 +1147,7 @@ synth(Env, E, singleton_type(E, t_any)) :-
   env_wf(Env).
 
 @topdown
-output synth_list_helper(env, value list, typ)
+rel synth_list_helper(env, value list, typ)
 synth_list_helper(_Env, [], empty_type).
 synth_list_helper(Env, V :: Vrest, union_type(T, Trest)) :-
   synth(Env, v2e(V), T),
@@ -1296,7 +1296,7 @@ synth(Env, e_ascribe(E, T), T) :-
   check(Env, E, T).
 
 @topdown
-output synth_entity_helper(env, (string, exp) map, typ)
+rel synth_entity_helper(env, (string, exp) map, typ)
 synth_entity_helper(_, [], t_any).
 synth_entity_helper(Env, (L, E) :: Rest, intersection_type(T, Trest)) :-
   synth(Env, E, Te),
@@ -1358,7 +1358,7 @@ synth(Env, Select, singleton_type(Select, U)) :-
   fields(Env, D, L) = some(U).
 
 @topdown
-output synth_app_helper(env, var list, exp list, typ list, subst, subst)
+rel synth_app_helper(env, var list, exp list, typ list, subst, subst)
 synth_app_helper(_, [], [], [], Subst, Subst).
 synth_app_helper(Env, X :: Xs, E :: Es, T :: Ts, Sin, Sout) :-
   T2 = subst_typ(Sin, T),
@@ -1414,11 +1414,11 @@ subtype(Env, T, T1) :-
   Program checking
 *******************************************************************************)
 
-output prog_ok
+rel prog_ok
 
-output func_not_ok(string)
+rel func_not_ok(string)
 
-output type_not_ok(string)
+rel type_not_ok(string)
 
 fun mk_env(Xs: (var * typ) list) : env =
   match Xs with
@@ -1452,14 +1452,14 @@ prog_ok :-
   Input conversion
 *******************************************************************************)
 
-@external
-input raw_func_sig(string, (var * typ) list, typ, exp)
-@external
-input raw_labeled_pure(string)
-@external
-input raw_type_alias(string, typ)
-@external
-input raw_type_indicator_func(string, typ)
+@disk
+@edb rel raw_func_sig(string, (var * typ) list, typ, exp)
+@disk
+@edb rel raw_labeled_pure(string)
+@disk
+@edb rel raw_type_alias(string, typ)
+@disk
+@edb rel raw_type_indicator_func(string, typ)
 
 fun process_raw_type(ty: typ) : typ =
   match ty with

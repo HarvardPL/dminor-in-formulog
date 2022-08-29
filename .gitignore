@@ -32,3 +32,5 @@ target/
 
 # Fact csvs
 *.csv
+
+.idea/
