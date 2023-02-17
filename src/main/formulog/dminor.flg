@@ -317,28 +317,28 @@ uninterpreted fun finite(v_bag_array smt) : bool smt
 uninterpreted fun positive(v_bag_array smt) : bool smt
 uninterpreted fun good_c(enc_val smt) : bool smt
 
-fun coll_axiom1 : bool smt =
+const coll_axiom1 : bool smt =
   let Ab = #ab[v_bag_array] in
   `forall Ab : alphab(betab(Ab)).
     finite(Ab) /\ positive(Ab) ==> alphab(betab(Ab)) #= Ab`
 
-fun coll_axiom2 : bool smt =
+const coll_axiom2 : bool smt =
   let Vb = #bv[v_bag] in
   `forall Vb : betab(alphab(Vb)).
     finite(alphab(Vb)) /\ positive(alphab(Vb)) /\ betab(alphab(Vb)) #= Vb`
 
-fun coll_axiom3 : bool smt =
+const coll_axiom3 : bool smt =
   let V = #v[enc_val] in
   let Vb = `alphab(#ev_coll_1(V))` in
   `forall V : good_c(V).
     good_c(V) <==> #is_ev_coll(V) /\ finite(Vb) /\ positive(Vb)`
 
-fun coll_axiom4 : bool smt =
+const coll_axiom4 : bool smt =
   let A = #a[v_bag_array] in
   `forall A : finite(A).
     finite(A) <==> array_default(A) #= int_const(0)`
 
-fun coll_axiom5 : bool smt =
+const coll_axiom5 : bool smt =
   let A = #a[v_bag_array] in
   let V = #v[enc_val] in
   `forall A : positive(A).
@@ -357,27 +357,27 @@ uninterpreted fun v_eupdate(string smt, enc_val smt, enc_val smt) : enc_val smt
 uninterpreted fun v_has_field(string smt, enc_val smt) : bool smt
 uninterpreted fun v_dot(string smt, enc_val smt) : enc_val smt
 
-fun entity_axiom1 : bool smt =
+const entity_axiom1 : bool smt =
   let Am = #am[sv_map_array] in
   `forall Am. finite_e(Am) ==> alpham(betam(Am)) #= Am`
 
-fun entity_axiom2 : bool smt =
+const entity_axiom2 : bool smt =
   let Svm = #svm[sv_map] in
   `forall Svm. finite_e(alpham(Svm)) /\ betam(alpham(Svm)) #= Svm`
 
-fun entity_axiom3 : bool smt =
+const entity_axiom3 : bool smt =
   let Svm = #svm[sv_map_array] in
   `forall Svm : finite_e(Svm). finite_e(Svm) <==> array_default(Svm) #= none`
 
-fun entity_axiom4 : bool smt =
+const entity_axiom4 : bool smt =
   let V = #v[enc_val] in
   `forall V : good_e(V).
     good_e(V) <==> #is_ev_entity(V) /\ finite_e(alpham(#ev_entity_1(V)))`
 
-fun entity_axiom5 : bool smt =
+const entity_axiom5 : bool smt =
   `v_eempty #= ev_entity(betam(array_const(none)))`
 
-fun entity_axiom6 : bool smt =
+const entity_axiom6 : bool smt =
   let I = #i[string] in
   let V = #v[enc_val] in
   let Svm = #svm[sv_map] in
@@ -385,7 +385,7 @@ fun entity_axiom6 : bool smt =
     v_eupdate(I, V, ev_entity(Svm)) #=
       ev_entity(betam(array_store(alpham(Svm), I, some(V))))`
 
-fun entity_axiom7 : bool smt =
+const entity_axiom7 : bool smt =
   let I = #i[string] in
   let Svm = #svm[sv_map] in
   `forall I, Svm : v_has_field(I, ev_entity(Svm)).
@@ -393,7 +393,7 @@ fun entity_axiom7 : bool smt =
       ~(array_select(alpham(Svm), I) #= none)`
 
 (* The original rule in the paper was not well-typed. *)
-fun entity_axiom8 : bool smt =
+const entity_axiom8 : bool smt =
   let I = #i[string] in
   let Svm = #svm[sv_map] in
   `forall I, Svm : v_dot(I, ev_entity(Svm)).
@@ -401,12 +401,12 @@ fun entity_axiom8 : bool smt =
 
 uninterpreted fun v_zero : enc_val smt
 
-fun v_zero_axiom : bool smt =
+const v_zero_axiom : bool smt =
   `v_zero #= ev_coll(betab(array_const(int_const(0))))`
 
 uninterpreted fun mem(enc_val smt, enc_val smt) : bool smt
 
-fun mem_axiom : bool smt =
+const mem_axiom : bool smt =
   let V = #v[enc_val] in
   let Vb = #vb[v_bag] in
   `forall V, Vb : mem(V, ev_coll(Vb)), array_select(alphab(Vb), V).
@@ -415,7 +415,7 @@ fun mem_axiom : bool smt =
 uninterpreted fun v_add_many(enc_val smt, int smt, enc_val smt) : enc_val smt
 uninterpreted fun v_add(enc_val smt, enc_val smt) : enc_val smt
 
-fun v_add_many_axiom : bool smt =
+const v_add_many_axiom : bool smt =
   let V = #v[enc_val] in
   let I = #i[int] in
   let Vb = #vb[v_bag] in
@@ -424,7 +424,7 @@ fun v_add_many_axiom : bool smt =
       ev_coll(betab(array_store(alphab(Vb), V,
                                 int_add(I, array_select(alphab(Vb), V)))))`
 
-fun v_add_axiom : bool smt =
+const v_add_axiom : bool smt =
   let V = #v[enc_val] in
   let Vs = #vs[enc_val] in
   `forall V, Vs : v_add(V, Vs).
@@ -435,13 +435,13 @@ uninterpreted fun accum(closure smt, enc_val smt, enc_val smt) : enc_val smt
 uninterpreted fun apply2(closure smt, enc_val smt, enc_val smt) : enc_val smt
 uninterpreted fun apply(string smt, enc_val list smt) : enc_val smt
 
-fun accum_axiom_nil : bool smt =
+const accum_axiom_nil : bool smt =
   let Clos = #clos[closure] in
   let Init = #init[enc_val] in
   `forall Clos, Init : accum(Clos, v_zero, Init).
     accum(Clos, v_zero, Init) #= Init`
 
-fun accum_axiom_cons : bool smt =
+const accum_axiom_cons : bool smt =
   let Clos = #clos[closure] in
   let Init = #init[enc_val] in
   let V = #v[enc_val] in
@@ -611,7 +611,7 @@ fun type_indicator_func_axioms(Fs: (string * typ) list) : bool smt =
     end
   end
 
-fun axiomatization : bool smt =
+const axiomatization : bool smt =
   let Tifa = type_indicator_func_axioms(type_indicator_func(??,??)) in
   `coll_axiom1 /\
    coll_axiom2 /\
@@ -742,16 +742,16 @@ rel explore_typ(string, typ, enc_val smt, bool smt list)
 
 uninterpreted fun size(enc_val smt) : int smt
 
-fun size_axiom1 : bool smt =
+const size_axiom1 : bool smt =
   let X = #x[enc_val] in
   `forall X : size(X). #is_ev_int(X) ==> size(X) #= int_abs(#ev_int_1(X))`
 
-fun size_axiom2 : bool smt =
+const size_axiom2 : bool smt =
   let E = #e[enc_val] in
   let X = #x[string] in
   `forall X, E : v_dot(X, E). int_lt(size(v_dot(X, E)), size(E))`
 
-fun size_axiom3 : bool smt =
+const size_axiom3 : bool smt =
   let X = #x[enc_val] in
   let Y = #y[enc_val] in
   `forall X, Y : mem(X, Y). mem(X, Y) ==> int_lt(size(X), size(Y))`
@@ -988,7 +988,7 @@ fun intersection_type(T: typ, U: typ) : typ =
   let E2 = e_type_test(e_var(X), U) in
   t_refine(X, t_any, e_binop(b_and, E1, E2))
 
-fun empty_type : typ = t_refine(#empty[value], t_any, e_bool(false))
+const empty_type : typ = t_refine(#empty[value], t_any, e_bool(false))
 
 fun conditional_type(E: exp, T: typ, U: typ) : typ =
   if is_pure(E) then
@@ -1708,4 +1708,4 @@ type_indicator_func(Func, tif_process_raw_type(Ty)) :-
   Codegen 
 *******************************************************************************)
 
-fun dummy : bool = is_sat(`smt_var[string, value]("hello") #= v_null`).
+const dummy : bool = is_sat(`smt_var[string, value]("hello") #= v_null`).
